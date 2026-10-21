@@ -52,6 +52,13 @@ export const strings = {
     minutes: "分",
     none: "无",
   },
+  shell: {
+    statusRunning: "运行中",
+    statusStopped: "已停止",
+    mainNavLabel: "主导航",
+    settingsNavLabel: "设置分区",
+    rpm: "RPM",
+  },
   status: {
     running: "代理运行中",
     stopped: "代理未运行",
@@ -309,6 +316,7 @@ export const strings = {
       network: "网络与代理",
       features: "功能",
       data: "数据与隐私",
+      appearance: "外观",
       about: "关于",
     },
     language: "语言",
