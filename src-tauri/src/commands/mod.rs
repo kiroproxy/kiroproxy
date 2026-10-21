@@ -1,1 +1,3 @@
-// 业务命令层：IPC 命令实现。
+// Copyright (c) 2026 Harllan He. Licensed under MIT.
+
+pub mod app;
