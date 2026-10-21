@@ -178,6 +178,7 @@
   }
   .num { font-variant-numeric: tabular-nums; }
   .serif { font-family: var(--font-serif); }
+  .alert-row:hover { background: var(--subtle); }
   ::-webkit-scrollbar { width: 4px; height: 4px; }
   ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 9999px; }
   ::-webkit-scrollbar-track { background: transparent; }
