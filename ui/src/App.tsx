@@ -1,7 +1,11 @@
+import { useEffect, useState } from "react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { HashRouter, Navigate, Route, Routes } from "react-router-dom"
 import { Toaster } from "@/components/ui/sonner"
 import { AppShell } from "@/components/shell/AppShell"
+import { StartupError } from "@/components/shell/StartupError"
+import { ipc } from "@/lib/ipc"
+import type { IpcError } from "@/lib/types"
 import { AccountDetailPage } from "@/routes/account-detail"
 import { AccountsPage } from "@/routes/accounts"
 import { ConnectPage } from "@/routes/connect"
@@ -19,6 +23,37 @@ const queryClient = new QueryClient({
 })
 
 function App() {
+  const [startupError, setStartupError] = useState<IpcError | null>(null)
+
+  useEffect(() => {
+    let disposed = false
+    void ipc
+      .getStartupError()
+      .then((error) => {
+        if (!disposed) setStartupError(error)
+      })
+      .catch(() => {
+        // 浏览器预览/测试环境没有 Tauri IPC，按正常启动处理。
+      })
+    return () => {
+      disposed = true
+    }
+  }, [])
+
+  if (startupError) {
+    return (
+      <StartupError
+        error={startupError}
+        onRetry={() => {
+          void ipc
+            .retryStartup()
+            .then(() => setStartupError(null))
+            .catch(() => window.location.reload())
+        }}
+      />
+    )
+  }
+
   return (
     <QueryClientProvider client={queryClient}>
       <HashRouter>
