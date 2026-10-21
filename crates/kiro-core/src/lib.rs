@@ -7,6 +7,7 @@ pub mod cache;
 pub mod common;
 pub mod config_store;
 pub mod http_client;
+pub mod kam;
 pub mod kiro;
 pub mod log_capture;
 pub mod logging;

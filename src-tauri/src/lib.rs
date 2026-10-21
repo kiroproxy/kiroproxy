@@ -39,6 +39,19 @@ pub fn run() {
             commands::app::read_text_file,
             commands::app::clear_logs,
             commands::app::quit_app,
+            // 账号
+            commands::accounts::list_accounts,
+            commands::accounts::add_account,
+            commands::accounts::update_account,
+            commands::accounts::delete_account,
+            commands::accounts::set_account_disabled,
+            commands::accounts::set_account_priority,
+            commands::accounts::reset_account_failure,
+            commands::accounts::get_account_balance,
+            commands::accounts::preview_kam_import,
+            commands::accounts::import_kam_accounts,
+            commands::accounts::verify_accounts,
+            commands::accounts::cancel_verify_accounts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running KiroProxy");

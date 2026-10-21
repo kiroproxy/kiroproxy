@@ -92,7 +92,7 @@ pub struct SetPriorityRequest {
 }
 
 /// 添加账号请求
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddCredentialRequest {
     /// 刷新令牌（必填）
