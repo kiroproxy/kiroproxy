@@ -101,6 +101,22 @@ export function useSetAccountDisabled() {
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.accounts }),
   })
 }
+export const useSetDisabled = useSetAccountDisabled
+export function useSetPriority() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, priority }: { id: number; priority: number }) =>
+      ipc.setAccountPriority(id, priority),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.accounts }),
+  })
+}
+export function useResetFailure() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => ipc.resetAccountFailure(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.accounts }),
+  })
+}
 export function useCreateApiKey() {
   const qc = useQueryClient()
   return useMutation({
