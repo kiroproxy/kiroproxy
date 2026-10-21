@@ -36,7 +36,7 @@ export function OverviewPage() {
 
   return (
     <section aria-label={strings.overview.title} className="flex flex-col gap-3">
-      <div className="grid gap-3 xl:grid-cols-[1.55fr_1fr]">
+      <div className="grid gap-3 lg:grid-cols-[1.55fr_1fr]">
         <StatusCard status={server} available={accounts.data?.available ?? 0} />
         {noAccounts ? <OnboardingCard /> : <ConnectCard baseUrl={baseUrl} />}
       </div>
@@ -48,7 +48,7 @@ export function OverviewPage() {
         rpm={rpm.data?.global ?? 0}
       />
 
-      <div className="grid gap-3 xl:grid-cols-[1.55fr_1fr]">
+      <div className="grid gap-3 lg:grid-cols-[1.55fr_1fr]">
         <UsageTrend daily={daily.data ?? []} />
         <div className="flex flex-col gap-3">
           {noAccounts ? (

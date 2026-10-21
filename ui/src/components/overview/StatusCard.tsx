@@ -19,8 +19,8 @@ export function StatusCard({ status, available }: StatusCardProps) {
         aria-hidden="true"
         className="pointer-events-none absolute -right-24 -top-28 size-[320px] rounded-full bg-[radial-gradient(circle_at_30%_20%,var(--orb-start),var(--orb-end))] opacity-[0.13] blur-3xl"
       />
-      <div className="relative flex flex-wrap items-center justify-between gap-6">
-        <div className="min-w-0">
+      <div className="relative flex flex-wrap items-center justify-between gap-6 lg:flex-nowrap">
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
             <span className={cn("size-2 rounded-full", running ? "bg-success" : "bg-danger")} />
             <span>{running ? strings.status.running : strings.status.stopped}</span>
