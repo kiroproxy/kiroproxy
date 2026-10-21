@@ -54,6 +54,11 @@ impl LogCapture {
     pub fn subscribe(&self) -> broadcast::Receiver<LogEntry> {
         self.sender.subscribe()
     }
+
+    /// 清空 ring buffer（不影响已订阅的接收者）
+    pub fn clear(&self) {
+        self.ring_buffer.lock().clear();
+    }
 }
 
 pub struct LogCaptureLayer {

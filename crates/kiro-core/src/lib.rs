@@ -2,6 +2,7 @@
 
 pub mod admin;
 pub mod anthropic;
+pub mod app_logging;
 pub mod cache;
 pub mod common;
 pub mod config_store;
@@ -13,4 +14,5 @@ pub mod model;
 pub mod openai;
 pub mod paths;
 pub mod runtime;
+pub mod stores;
 pub mod token;
