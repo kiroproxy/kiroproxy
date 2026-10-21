@@ -143,10 +143,6 @@ pub struct Config {
     #[serde(default)]
     pub proxy_password: Option<String>,
 
-    /// Admin Password（可选，启用 Admin API 功能）
-    #[serde(default, alias = "adminApiKey")]
-    pub admin_psw: Option<String>,
-
     /// 负载均衡模式（"priority" 或 "balanced"）
     #[serde(default = "default_load_balancing_mode")]
     pub load_balancing_mode: String,
@@ -221,7 +217,7 @@ pub struct Config {
 
     /// Kiro 请求体落盘取证开关（临时调试用）
     ///
-    /// true 时每个发往 Kiro 的请求体都会写入 `app/config/kiro-body-dump/`
+    /// true 时每个发往 Kiro 的请求体都会写入应用数据目录的 `kiro-body-dump/`
     /// （0600 权限，文件名含毫秒时间戳），用于排查协议转换问题。
     /// 仍兼容环境变量 `KIRO_DUMP_BODY=1`（两者任一满足即生效）。
     /// 默认 false：不落盘。定位问题后应及时关闭。
@@ -259,7 +255,7 @@ fn default_host() -> String {
 }
 
 fn default_port() -> u16 {
-    8080
+    5678
 }
 
 fn default_region() -> String {
@@ -318,7 +314,6 @@ impl Default for Config {
             proxy_url: None,
             proxy_username: None,
             proxy_password: None,
-            admin_psw: None,
             load_balancing_mode: default_load_balancing_mode(),
             max_rpm_per_credential: default_max_rpm_per_credential(),
             model_cache_ttl_secs: default_model_cache_ttl_secs(),
@@ -386,7 +381,6 @@ impl Config {
     /// - `REGION`: AWS 区域
     /// - `AUTH_REGION`: Token 刷新区域
     /// - `API_REGION`: API 请求区域
-    /// - `ADMIN_PSW`: Admin Password（未设置时回退读取 `ADMIN_API_KEY`）
     /// - `PROXY_URL`: HTTP 代理地址
     /// - `PROXY_USERNAME`: 代理用户名
     /// - `PROXY_PASSWORD`: 代理密码
@@ -413,11 +407,6 @@ impl Config {
         }
         if let Ok(v) = env::var("API_REGION") {
             self.api_region = Some(v);
-        }
-        if let Ok(v) = env::var("ADMIN_PSW") {
-            self.admin_psw = Some(v);
-        } else if let Ok(v) = env::var("ADMIN_API_KEY") {
-            self.admin_psw = Some(v);
         }
         if let Ok(v) = env::var("PROXY_URL") {
             self.proxy_url = Some(v);

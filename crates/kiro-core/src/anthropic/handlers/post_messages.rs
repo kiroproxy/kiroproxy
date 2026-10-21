@@ -357,7 +357,7 @@ pub async fn post_messages(
 }
 
 // 临时取证：把最终发往 Kiro 的完整请求体落盘，dump_kiro_body 配置或 KIRO_DUMP_BODY=1 时启用。
-// 文件落在 app/config/kiro-body-dump/（gitignore 目录），权限 0600，定位后关闭。
+// 文件落在应用数据目录的 kiro-body-dump/ 下（gitignore 目录），权限 0600，定位后关闭。
 
 /// Kiro 请求体落盘取证开关（config `dumpKiroBody`，默认 false）。
 ///
@@ -384,14 +384,16 @@ fn dump_kiro_request_body(request_body: &str) {
     const MAX_DUMP_FILES: usize = 200;
     const COLLISION_RETRIES: usize = 5;
 
-    let dir = std::path::Path::new("app/config/kiro-body-dump");
-    if std::fs::create_dir_all(dir).is_err() {
+    let dir = crate::paths::global()
+        .map(|p| p.kiro_body_dump_dir())
+        .unwrap_or_else(|| std::path::PathBuf::from("kiro-body-dump"));
+    if std::fs::create_dir_all(&dir).is_err() {
         tracing::warn!("[BODY-DUMP] 创建 dump 目录失败");
         return;
     }
     // 按文件名排序（毫秒时间戳命名天然按时间有序），保留最近 MAX_DUMP_FILES 个，
     // 防止长时间开启落盘取证后磁盘无限增长
-    let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+    let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
         .map(|rd| {
             rd.filter_map(|e| e.ok())
                 .map(|e| e.path())
