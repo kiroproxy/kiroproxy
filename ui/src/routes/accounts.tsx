@@ -12,6 +12,7 @@ import {
 import { AddAccountDialog } from "@/components/accounts/AddAccountDialog"
 import { AccountTable } from "@/components/accounts/AccountTable"
 import { AccountToolbar, type AccountSort } from "@/components/accounts/AccountToolbar"
+import { BatchVerifyDialog } from "@/components/accounts/BatchVerifyDialog"
 import {
   accountName,
   accountStatus,
@@ -19,7 +20,7 @@ import {
   type AccountStatus,
   type AccountStatusFilter,
 } from "@/lib/account-status"
-import { useAccounts, useDeleteAccount, useResetFailure, useVerifyAccounts } from "@/lib/queries"
+import { useAccounts, useDeleteAccount, useResetFailure } from "@/lib/queries"
 import { strings } from "@/lib/strings"
 import type { CredentialStatusItem } from "@/lib/types"
 
@@ -56,7 +57,6 @@ const EMPTY_ACCOUNTS: CredentialStatusItem[] = []
 
 export function AccountsPage() {
   const accountsQuery = useAccounts()
-  const verifyAccounts = useVerifyAccounts()
   const resetFailure = useResetFailure()
   const deleteAccount = useDeleteAccount()
 
@@ -66,6 +66,7 @@ export function AccountsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set())
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
+  const [verifyOpen, setVerifyOpen] = useState(false)
 
   const accounts = accountsQuery.data?.credentials ?? EMPTY_ACCOUNTS
   const term = search.trim().toLowerCase()
@@ -118,10 +119,7 @@ export function AccountsPage() {
 
   const handleVerify = () => {
     if (selectedItems.length === 0) return
-    verifyAccounts.mutate(
-      selectedItems.map((item) => item.id),
-      { onSuccess: () => setSelectedIds(new Set()) },
-    )
+    setVerifyOpen(true)
   }
 
   const handleRestore = () => {
@@ -193,6 +191,14 @@ export function AccountsPage() {
       </AlertDialog>
 
       <AddAccountDialog open={addOpen} onOpenChange={setAddOpen} />
+      <BatchVerifyDialog
+        ids={selectedItems.map((item) => item.id)}
+        open={verifyOpen}
+        onOpenChange={(open) => {
+          setVerifyOpen(open)
+          if (!open) setSelectedIds(new Set())
+        }}
+      />
     </section>
   )
 }
