@@ -1,7 +1,10 @@
 import { useMemo, useState } from "react"
-import { Card, CardContent } from "@/components/ui/card"
+import { CalendarIcon } from "lucide-react"
+import type { DateRange } from "react-day-picker"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { Calendar } from "@/components/ui/calendar"
+import { Card, CardContent } from "@/components/ui/card"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { fmtCost, fmtDateTime, fmtDuration, fmtNumber } from "@/lib/format"
@@ -21,6 +24,53 @@ function shiftDays(days: number): string {
   const date = new Date()
   date.setDate(date.getDate() + days)
   return localDate(date)
+}
+
+function parseYmd(value: string): Date {
+  const [year, month, day] = value.split("-").map(Number)
+  return new Date(year, (month ?? 1) - 1, day ?? 1)
+}
+
+function DateRangePicker({
+  from,
+  to,
+  onChange,
+}: {
+  from: string
+  to: string
+  onChange: (from: string, to: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const selected: DateRange = { from: parseYmd(from), to: parseYmd(to) }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <Button variant="secondary" size="sm" className="gap-2">
+            <CalendarIcon />
+            <span className="num">
+              {from} → {to}
+            </span>
+          </Button>
+        }
+      />
+      <PopoverContent className="w-auto p-0" align="start">
+        <Calendar
+          mode="range"
+          selected={selected}
+          onSelect={(next: DateRange | undefined) => {
+            if (!next?.from) return
+            const nextFrom = localDate(next.from)
+            const nextTo = next.to ? localDate(next.to) : nextFrom
+            onChange(nextFrom, nextTo)
+            if (next.to) setOpen(false)
+          }}
+          numberOfMonths={2}
+        />
+      </PopoverContent>
+    </Popover>
+  )
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
@@ -92,31 +142,16 @@ export function UsagePage() {
           </TabsList>
         </Tabs>
         {range === "custom" ? (
-          <div className="flex items-center gap-1.5">
-            <Input
-              type="date"
-              value={customFrom}
-              className="w-[150px]"
-              onChange={(event) => {
-                setCustomFrom(event.target.value)
-                setPage(1)
-              }}
-            />
-            <span className="text-[12px] text-muted-foreground">→</span>
-            <Input
-              type="date"
-              value={customTo}
-              className="w-[150px]"
-              onChange={(event) => {
-                setCustomTo(event.target.value)
-                setPage(1)
-              }}
-            />
-          </div>
+          <DateRangePicker
+            from={customFrom}
+            to={customTo}
+            onChange={(nextFrom, nextTo) => {
+              setCustomFrom(nextFrom)
+              setCustomTo(nextTo)
+              setPage(1)
+            }}
+          />
         ) : null}
-        <span className="num ml-auto text-[11.5px] text-muted-foreground">
-          {from} → {to}
-        </span>
       </div>
 
       <Card>

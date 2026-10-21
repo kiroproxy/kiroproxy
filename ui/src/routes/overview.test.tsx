@@ -28,7 +28,7 @@ const fixtures = vi.hoisted(() => ({
     disabledReason: null,
   },
   today: {
-    date: "2026-10-21",
+    date: new Date().toLocaleDateString("sv-SE"),
     totalRequests: 1234,
     totalCost: 1.25,
     totalCredits: 12.5,

@@ -54,15 +54,25 @@ function usePageMeta(): PageMeta {
 export function AppShell({ title, subtitle, actions, children }: AppShellProps) {
   const meta = usePageMeta()
   const shellStatus = useShellStatus()
+  const { pathname } = useLocation()
+  const settingsMode = pathname.startsWith("/settings")
+
+  const toolbar = (
+    <Toolbar
+      title={title ?? meta.title}
+      subtitle={subtitle ?? meta.subtitle}
+      actions={actions}
+    />
+  )
 
   return (
     <div className="flex h-screen flex-col bg-background">
       <TopBar status={shellStatus.server} />
-      <Toolbar
-        title={title ?? meta.title}
-        subtitle={subtitle ?? meta.subtitle}
-        actions={actions}
-      />
+      {settingsMode ? (
+        <div className="mx-auto w-full max-w-[808px]">{toolbar}</div>
+      ) : (
+        toolbar
+      )}
       <main className="flex-1 overflow-y-auto px-6 pb-5">{children ?? <Outlet />}</main>
       <StatusBar
         status={shellStatus.server}

@@ -16,6 +16,13 @@ const FALLBACK_SERVER: ServerStatus = {
   baseUrl: "http://127.0.0.1:5678",
 }
 
+function todayString(): string {
+  const date = new Date()
+  const month = String(date.getMonth() + 1).padStart(2, "0")
+  const day = String(date.getDate()).padStart(2, "0")
+  return `${date.getFullYear()}-${month}-${day}`
+}
+
 export function OverviewPage() {
   const accounts = useAccounts()
   const daily = useDailyUsage()
@@ -24,32 +31,33 @@ export function OverviewPage() {
 
   const server = serverQuery.data ?? FALLBACK_SERVER
   const baseUrl = server.baseUrl || `http://${server.host}:${server.port}`
-  const today = daily.data?.at(-1)
-  const tokens = today?.totalInputTokens ?? 0
+  const today = daily.data?.find((item) => item.date === todayString())
+  const noAccounts = accounts.data?.total === 0
 
   return (
     <section aria-label={strings.overview.title} className="flex flex-col gap-3">
-      {accounts.data && accounts.data.total === 0 ? (
-        <OnboardingCard />
-      ) : (
+      <div className="grid gap-3 xl:grid-cols-[1.55fr_1fr]">
         <StatusCard status={server} available={accounts.data?.available ?? 0} />
-      )}
+        {noAccounts ? <OnboardingCard /> : <ConnectCard baseUrl={baseUrl} />}
+      </div>
 
       <MetricCards
         requests={today?.totalRequests ?? 0}
-        tokens={tokens}
+        tokens={today?.totalInputTokens ?? 0}
         credits={today?.totalCredits ?? 0}
         rpm={rpm.data?.global ?? 0}
       />
 
-      <div className="grid gap-3 xl:grid-cols-[1.35fr_1fr]">
-        <CurrentAccount accounts={accounts.data} />
+      <div className="grid gap-3 xl:grid-cols-[1.55fr_1fr]">
         <UsageTrend daily={daily.data ?? []} />
-      </div>
-
-      <div className="grid gap-3 xl:grid-cols-[1.35fr_1fr]">
-        <AlertList accounts={accounts.data} />
-        <ConnectCard baseUrl={baseUrl} />
+        <div className="flex flex-col gap-3">
+          {noAccounts ? (
+            <ConnectCard baseUrl={baseUrl} />
+          ) : (
+            <CurrentAccount accounts={accounts.data} />
+          )}
+          <AlertList accounts={accounts.data} />
+        </div>
       </div>
     </section>
   )

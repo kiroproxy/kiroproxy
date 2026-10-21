@@ -155,15 +155,10 @@ export function TopBar({ status }: TopBarProps) {
             {strings.nav.back}
           </Button>
         ) : (
-          <button
-            type="button"
-            onClick={() => navigate("/")}
-            aria-label={strings.app.name}
-            className="flex h-8 items-center gap-2 rounded-full px-2 text-[12.5px] font-semibold text-foreground transition-colors hover:bg-subtle"
-          >
+          <div className="flex h-8 select-none items-center gap-2 px-2 text-[12.5px] font-semibold text-foreground">
             <span className="size-2 rounded-full bg-primary" />
             {strings.app.name}
-          </button>
+          </div>
         )}
       </div>
 
@@ -175,7 +170,7 @@ export function TopBar({ status }: TopBarProps) {
               value={activeSection}
               onChange={(section) => navigate(`/settings/${section}`)}
               ariaLabel={strings.shell.settingsNavLabel}
-              className="max-w-[calc(100vw-360px)] overflow-x-auto"
+              className="max-w-[calc(100vw-360px)] overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             />
           ) : (
             <SegmentedNav

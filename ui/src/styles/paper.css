@@ -48,6 +48,9 @@
   --text-info: #416A93;
   --nav-active: #F2EBE2;
   --overlay: rgba(43, 36, 28, 0.36);
+  --orb-start: #E08A62;
+  --orb-end: #9E4524;
+  --orb-glow: rgba(180, 85, 47, 0.32);
   --chart-1: var(--quota);
   --chart-2: var(--series-2);
   --radius: 10px;
@@ -105,6 +108,9 @@
   --text-info: #8DAFD2;
   --nav-active: #3C352D;
   --overlay: rgba(0, 0, 0, 0.55);
+  --orb-start: #EBA27F;
+  --orb-end: #B4552F;
+  --orb-glow: rgba(217, 118, 75, 0.35);
   --shadow-card: 0 0 0 0 transparent;
 }
 
