@@ -58,6 +58,11 @@ export const useCredentialUsageRecords = (id: number, page: number, pageSize = 5
     queryKey: ["credentialUsage", id, page],
     queryFn: () => ipc.getCredentialUsageRecords(id, page, pageSize),
   })
+export const useCredentialTodaySummary = (id: number) =>
+  useQuery({
+    queryKey: ["credentialToday", id],
+    queryFn: () => ipc.getCredentialTodaySummary(id),
+  })
 export const useThrottleLogs = (id?: number) =>
   useQuery({ queryKey: queryKeys.throttleLogs(id), queryFn: () => ipc.getThrottleLogs(id) })
 export const useFailureLogs = (id?: number) =>

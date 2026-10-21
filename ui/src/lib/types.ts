@@ -87,7 +87,9 @@ export interface AddCredentialRequest {
   proxyPassword?: string | null
 }
 
-export type UpdateCredentialRequest = Partial<AddCredentialRequest>
+export type UpdateCredentialRequest = Partial<AddCredentialRequest> & {
+  thinkingAdaptive?: boolean
+}
 
 export interface AddCredentialResponse {
   success: boolean
