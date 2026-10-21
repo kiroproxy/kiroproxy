@@ -122,6 +122,15 @@ export interface ImportOutcome {
   failed: number
 }
 
+export interface KiroIdePreview {
+  maskedRefreshToken: string
+  provider?: string | null
+  authMethod?: string | null
+  profileArn?: string | null
+  expiresAt?: string | null
+  path: string
+}
+
 export interface VerifyItem {
   id: number
   status: "success" | "failed"

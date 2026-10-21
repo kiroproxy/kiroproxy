@@ -186,6 +186,14 @@ export const strings = {
     addTitle: "添加账号",
     manualTab: "手动添加",
     kamTab: "KAM 导入",
+    kiroIdeTab: "Kiro IDE",
+    kiroIdeHint:
+      "读取本机 Kiro IDE 的登录缓存（~/.aws/sso/cache/kiro-auth-token.json）。请先在本机登录 Kiro IDE。",
+    kiroIdeScan: "扫描 Kiro IDE",
+    kiroIdeRescan: "重新扫描",
+    kiroIdeNotFound: "未找到 Kiro IDE 登录信息，请先登录 Kiro IDE。",
+    kiroIdeFound: "已找到 Kiro IDE 登录信息",
+    kiroIdeImport: "导入到 KiroProxy",
     manual: {
       refreshToken: "Refresh Token",
       authMethod: "认证方式",

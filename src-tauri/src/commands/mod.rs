@@ -3,6 +3,7 @@
 pub mod accounts;
 pub mod api_keys;
 pub mod app;
+pub mod kiro_ide;
 pub mod logs;
 pub mod models;
 pub mod settings;

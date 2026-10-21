@@ -1,5 +1,6 @@
-import { useRef, useState, type ReactNode } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import { toast } from "sonner"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -24,7 +25,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { ipc } from "@/lib/ipc"
 import { useCreateAccount, useImportKam } from "@/lib/queries"
 import { strings } from "@/lib/strings"
-import type { AddCredentialRequest, KamPreview } from "@/lib/types"
+import type { AddCredentialRequest, KamPreview, KiroIdePreview } from "@/lib/types"
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -267,6 +268,104 @@ function KamForm({ onDone }: { onDone: () => void }) {
   )
 }
 
+function Info({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5">
+      <span className="text-[11px] text-muted-foreground">{label}</span>
+      <span className="truncate font-medium" title={value}>
+        {value}
+      </span>
+    </div>
+  )
+}
+
+function KiroIdeForm({ onDone }: { onDone: () => void }) {
+  const [preview, setPreview] = useState<KiroIdePreview | null | undefined>(undefined)
+  const [busy, setBusy] = useState(false)
+
+  const scan = async () => {
+    setBusy(true)
+    try {
+      setPreview(await ipc.scanKiroIde())
+    } catch (error) {
+      toast.error((error as { message?: string }).message ?? strings.errors.actionFailed)
+      setPreview(null)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  useEffect(() => {
+    void scan()
+  }, [])
+
+  const importAccount = async () => {
+    setBusy(true)
+    try {
+      const result = await ipc.importKiroIde()
+      const extra = [
+        result.duplicate ? `重复 ${result.duplicate}` : "",
+        result.failed ? `验活失败 ${result.failed}` : "",
+      ]
+        .filter(Boolean)
+        .join("，")
+      toast.success(`导入 ${result.imported} 条${extra ? `，${extra}` : ""}`)
+      onDone()
+    } catch (error) {
+      toast.error((error as { message?: string }).message ?? strings.errors.actionFailed)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-[12px] leading-5 text-muted-foreground">
+        {strings.accounts.kiroIdeHint}
+      </p>
+
+      {busy && preview === undefined ? (
+        <div className="rounded-[12px] border border-border bg-subtle/40 p-6 text-center text-[12.5px] text-muted-foreground">
+          {strings.common.loading}
+        </div>
+      ) : null}
+
+      {preview === null ? (
+        <div className="flex flex-col items-center gap-2 rounded-[12px] border border-dashed border-border-strong bg-subtle/40 p-6 text-center">
+          <span className="text-[12.5px] text-muted-foreground">{strings.accounts.kiroIdeNotFound}</span>
+          <Button variant="secondary" size="sm" onClick={() => void scan()} disabled={busy}>
+            {strings.accounts.kiroIdeScan}
+          </Button>
+        </div>
+      ) : null}
+
+      {preview ? (
+        <div className="flex flex-col gap-3 rounded-[12px] border border-border bg-subtle/40 p-4">
+          <div className="flex items-center gap-2">
+            <Badge variant="success">{strings.accounts.kiroIdeFound}</Badge>
+            <span className="truncate font-mono text-[10.5px] text-faint">{preview.path}</span>
+          </div>
+          <div className="grid gap-2 text-[12px] md:grid-cols-2">
+            <Info label="Provider" value={preview.provider ?? "—"} />
+            <Info label="Auth" value={preview.authMethod ?? "social"} />
+            <Info label="Profile ARN" value={preview.profileArn ?? "—"} />
+            <Info label="过期时间" value={preview.expiresAt ?? "—"} />
+            <Info label="Refresh Token" value={preview.maskedRefreshToken} />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" size="sm" onClick={() => void scan()} disabled={busy}>
+              {strings.accounts.kiroIdeRescan}
+            </Button>
+            <Button size="sm" onClick={() => void importAccount()} disabled={busy}>
+              {strings.accounts.kiroIdeImport}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 export function AddAccountDialog({
   open,
   onOpenChange,
@@ -286,12 +385,16 @@ export function AddAccountDialog({
           <TabsList>
             <TabsTrigger value="kam">{strings.accounts.kamTab}</TabsTrigger>
             <TabsTrigger value="manual">{strings.accounts.manualTab}</TabsTrigger>
+            <TabsTrigger value="kiroide">{strings.accounts.kiroIdeTab}</TabsTrigger>
           </TabsList>
           <TabsContent value="kam">
             <KamForm onDone={done} />
           </TabsContent>
           <TabsContent value="manual">
             <ManualForm onDone={done} />
+          </TabsContent>
+          <TabsContent value="kiroide">
+            <KiroIdeForm onDone={done} />
           </TabsContent>
         </Tabs>
       </DialogContent>

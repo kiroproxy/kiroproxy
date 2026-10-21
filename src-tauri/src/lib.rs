@@ -52,6 +52,8 @@ pub fn run() {
             commands::accounts::import_kam_accounts,
             commands::accounts::verify_accounts,
             commands::accounts::cancel_verify_accounts,
+            commands::kiro_ide::scan_kiro_ide,
+            commands::kiro_ide::import_kiro_ide,
             // 设置
             commands::settings::get_settings,
             commands::settings::set_load_balancing_mode,

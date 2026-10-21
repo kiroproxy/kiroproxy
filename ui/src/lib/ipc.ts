@@ -14,6 +14,7 @@ import type {
   FailureLogPage,
   ImportOutcome,
   KamPreview,
+  KiroIdePreview,
   LogEntry,
   LogKind,
   RpmSnapshot,
@@ -75,6 +76,8 @@ export const ipc = {
     call<ImportOutcome>("import_kam_accounts", { json, verify }),
   verifyAccounts: (ids: number[]) => call<VerifyOutcome>("verify_accounts", { ids }),
   cancelVerifyAccounts: () => call<void>("cancel_verify_accounts"),
+  scanKiroIde: () => call<KiroIdePreview | null>("scan_kiro_ide"),
+  importKiroIde: () => call<ImportOutcome>("import_kiro_ide"),
 
   // API Key
   listApiKeys: () => call<ApiKeyView[]>("list_api_keys"),
