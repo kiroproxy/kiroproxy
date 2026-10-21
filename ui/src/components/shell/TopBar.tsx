@@ -144,7 +144,7 @@ export function TopBar({ status }: TopBarProps) {
         isMac ? "pl-[78px]" : "pl-3.5",
       )}
     >
-      <div className="flex min-w-0 shrink-0 items-center">
+      <div data-tauri-drag-region className="flex min-w-0 shrink-0 items-center">
         {settingsMode ? (
           <Button
             variant="ghost"
@@ -155,14 +155,17 @@ export function TopBar({ status }: TopBarProps) {
             {strings.nav.back}
           </Button>
         ) : (
-          <div className="flex h-8 select-none items-center gap-2 px-2 text-[12.5px] font-semibold text-foreground">
+          <div
+            data-tauri-drag-region
+            className="flex h-8 select-none items-center gap-2 px-2 text-[12.5px] font-semibold text-foreground"
+          >
             <span className="size-2 rounded-full bg-primary" />
             {strings.app.name}
           </div>
         )}
       </div>
 
-      <div className="flex min-w-0 flex-1 items-center justify-center">
+      <div data-tauri-drag-region className="flex min-w-0 flex-1 items-center justify-center">
         <div className="absolute left-1/2 -translate-x-1/2">
           {settingsMode ? (
             <SegmentedNav

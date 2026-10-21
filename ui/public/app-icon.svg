@@ -1,11 +1,26 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
-    <radialGradient id="g" cx="30%" cy="20%" r="90%">
-      <stop offset="0" stop-color="#E08A62"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFCF7"/>
+      <stop offset="1" stop-color="#F0E4D4"/>
+    </linearGradient>
+    <radialGradient id="orb" cx="30%" cy="20%" r="85%">
+      <stop offset="0" stop-color="#E89A72"/>
+      <stop offset="0.55" stop-color="#C9663C"/>
       <stop offset="1" stop-color="#9E4524"/>
     </radialGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFCF7" stop-opacity=".96"/>
+      <stop offset="1" stop-color="#FFFCF7" stop-opacity=".76"/>
+    </linearGradient>
   </defs>
-  <rect width="1024" height="1024" rx="220" fill="#F7F3EC"/>
-  <circle cx="512" cy="512" r="300" fill="url(#g)"/>
-  <circle cx="512" cy="512" r="210" fill="none" stroke="#FFFCF7" stroke-width="34" opacity=".92"/>
+
+  <!-- macOS 图标网格：824x824 内容区，四周 100px 透明留白 -->
+  <rect x="100" y="112" width="824" height="824" rx="185" fill="#2B241C" opacity=".18"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="101" y="101" width="822" height="822" rx="184" fill="none" stroke="#FFFFFF" stroke-opacity=".55" stroke-width="2"/>
+
+  <circle cx="512" cy="512" r="258" fill="url(#orb)"/>
+  <circle cx="512" cy="512" r="186" fill="none" stroke="url(#ring)" stroke-width="30"/>
+  <circle cx="512" cy="512" r="74" fill="#FFFCF7" opacity=".96"/>
 </svg>
