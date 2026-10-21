@@ -1,0 +1,13 @@
+{
+  "name": "kiroproxy",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --dir ui dev",
+    "build": "pnpm --dir ui build",
+    "test": "pnpm --dir ui test",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
