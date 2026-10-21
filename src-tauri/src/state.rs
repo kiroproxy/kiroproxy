@@ -69,6 +69,8 @@ impl AppState {
             }
         }
         let log_capture = app_logging::init(&config, &paths)?;
+        // 应用 token 直通、thinking 文本化、分块写入等进程级开关。
+        crate::services::settings::apply_runtime_flags(&config);
         let stores = Stores::load(&paths)?;
         stores.ensure_default_api_key()?;
         let mut backend = Backend::build(&paths, &config, &stores, log_capture.clone())?;

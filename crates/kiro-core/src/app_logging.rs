@@ -8,8 +8,12 @@ use std::sync::{Arc, OnceLock};
 use tracing_subscriber::prelude::*;
 
 static CAPTURE: OnceLock<Arc<LogCapture>> = OnceLock::new();
+/// 串行化初始化：并发调用（如并行测试）会同时看到 CAPTURE 未设置，
+/// 第二个调用随后安装全局 subscriber 时 panic。
+static INIT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub fn init(config: &Config, paths: &AppPaths) -> anyhow::Result<Arc<LogCapture>> {
+    let _guard = INIT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(capture) = CAPTURE.get() {
         return Ok(capture.clone());
     }
