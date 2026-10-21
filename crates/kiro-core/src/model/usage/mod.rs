@@ -629,9 +629,9 @@ mod pricing;
 mod tests;
 
 #[allow(unused_imports)] // 类型归属 daily.rs，经 mod 再导出保持原模块路径
-pub(crate) use daily::{CredentialDaySummary, DailySummary};
+pub use daily::{CredentialDaySummary, DailySummary};
 #[allow(unused_imports)]
-pub(crate) use pagination::{UsageRecordItem, UsageRecordsPage};
+pub use pagination::{UsageRecordItem, UsageRecordsPage};
 #[allow(unused_imports)]
 pub(crate) use pricing::{ModelPricing, get_model_pricing};
 pub(crate) use pricing::{calculate_cost, get_k_ref};

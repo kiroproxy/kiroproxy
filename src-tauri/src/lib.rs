@@ -63,6 +63,31 @@ pub fn run() {
             commands::settings::set_dump_kiro_body,
             commands::settings::set_write_chunking_max_lines,
             commands::settings::set_runtime_config,
+            // 日志
+            commands::logs::get_log_snapshot,
+            commands::logs::get_throttle_logs,
+            commands::logs::get_failure_logs,
+            commands::logs::export_logs,
+            // 模型
+            commands::models::list_models,
+            commands::models::get_account_models,
+            // 用量
+            commands::usage::get_daily_usage,
+            commands::usage::get_daily_usage_records,
+            commands::usage::get_usage_records,
+            commands::usage::get_credential_usage_records,
+            commands::usage::get_credential_today_summary,
+            commands::usage::get_rpm,
+            // API Key
+            commands::api_keys::list_api_keys,
+            commands::api_keys::get_api_key_secret,
+            commands::api_keys::create_api_key,
+            commands::api_keys::update_api_key,
+            commands::api_keys::delete_api_key,
+            commands::api_keys::get_all_api_key_usage,
+            commands::api_keys::get_api_key_usage,
+            commands::api_keys::get_api_key_usage_records,
+            commands::api_keys::reset_api_key_usage,
         ])
         .run(tauri::generate_context!())
         .expect("error while running KiroProxy");
