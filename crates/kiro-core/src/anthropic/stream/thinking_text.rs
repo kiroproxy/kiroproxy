@@ -7,8 +7,8 @@
 //! 像 Kiro CLI 一样实时可见。
 //!
 //! 每行内容用 ANSI dim（变暗）转义包裹，接近 Kiro CLI 的灰色思考文字；
-//! 是否生效取决于客户端是否放行转义字符：已确认不解析 ANSI 的图形界面（UA 入口以
-//! `claude-desktop` 开头）改用无转义的纯文本样式，其余 Claude Code 入口一律用 ANSI
+//! Claude Code 的助手文本按 Markdown 渲染，不解析 ANSI 转义（CLI / VS Code / Desktop
+//! 都会把 `ESC[2m` 显示成字面 `[2m`），因此对 Claude Code 统一使用无转义的纯文本样式
 //! （见 [`thinking_text_style`]）。首行为「💭 Thinking」标记，
 //! 块收尾追加「💭 Thought for Ns (N tokens)」时长行（贴近 Claude Code 原生样式，
 //! token 数为该思考块正文的 cl100k_base 计数），
@@ -84,44 +84,12 @@ pub enum ThinkingTextStyle {
 
 /// 按请求的客户端决定思考文本化的渲染样式；`None` 表示不启用（走原生 thinking）。
 ///
-/// 渲染默认用 ANSI dim 转义，只有终端会把它当样式；Claude Desktop 等图形界面不解析，
-/// 会把 `ESC` 显示成方块、`[2m` / `[0m` 显示成明文（issue #48）。而 Desktop 的原生 thinking
-/// 默认不展示思考内容，所以对它改用无转义的 [`ThinkingTextStyle::Plain`]。
-///
-/// 判定依据是 UA 括号内的入口字段，如 `claude-cli/2.1.231 (external, cli)` 的 `cli`、
-/// `claude-cli/2.1.295 (external, claude-desktop-3p, agent-sdk/0.3.295)` 的 `claude-desktop-3p`：
-/// - 入口以 `claude-desktop` 开头 → [`ThinkingTextStyle::Plain`]（唯一已确认渲染不了 ANSI 的入口）；
-/// - 其余 Claude Code 入口（`cli`、`local-agent`、`claude-vscode`、`sdk-ts`，或解析不出入口）
-///   → [`ThinkingTextStyle::Ansi`]，保持引入入口判定之前的行为；
-/// - 非 Claude Code 客户端 → `None`，走原生 thinking。
-///
-/// 这里刻意用「已知不支持才切换」的黑名单，而不是「已知支持才启用」的白名单：
-/// 对渲染能力未知的入口回退原生 thinking，会让它们的思考过程静默消失（原生 thinking
-/// 在多数客户端被折叠，长任务期间界面无任何输出，issue #48 后续反馈中 `local-agent`
-/// 即因此回归）。显示成乱码是可见、可自查的；静默丢失则不是。
+/// Claude Code 的助手文本按 Markdown 渲染，不解析 ANSI 转义；CLI、VS Code、
+/// Desktop 等入口都会把 `ESC[2m` 显示成字面 `[2m`，污染思考内容。因此对
+/// Claude Code 统一使用无转义的 [`ThinkingTextStyle::Plain`]。
+/// 非 Claude Code 客户端返回 `None`，走原生 thinking。
 pub fn thinking_text_style(headers: &axum::http::HeaderMap) -> Option<ThinkingTextStyle> {
-    if !is_claude_code_client(headers) {
-        return None;
-    }
-    let entrypoint = headers
-        .get(axum::http::header::USER_AGENT)
-        .and_then(|v| v.to_str().ok())
-        .and_then(client_entrypoint)
-        .map(str::to_ascii_lowercase);
-    match entrypoint.as_deref() {
-        Some(e) if e.starts_with("claude-desktop") => Some(ThinkingTextStyle::Plain),
-        _ => Some(ThinkingTextStyle::Ansi),
-    }
-}
-
-/// 取 UA 括号内的入口字段（第二项）：`claude-cli/x (external, <entrypoint>, ...)`。
-fn client_entrypoint(user_agent: &str) -> Option<&str> {
-    let inner = user_agent.split_once('(')?.1.split_once(')')?.0;
-    inner
-        .split(',')
-        .nth(1)
-        .map(str::trim)
-        .filter(|e| !e.is_empty())
+    is_claude_code_client(headers).then_some(ThinkingTextStyle::Plain)
 }
 
 /// 剥离历史 text 块中由本模块渲染的整个思考块（标记行 + 思考正文 + 时长行），
@@ -880,56 +848,25 @@ mod tests {
     }
 
     #[test]
-    fn style_is_ansi_for_terminal_cli() {
-        assert_eq!(
-            style_of("claude-cli/2.1.231 (external, cli)"),
-            Some(ThinkingTextStyle::Ansi)
-        );
-        // 入口大小写不敏感
-        assert_eq!(
-            style_of("claude-cli/2.1.231 (external, CLI)"),
-            Some(ThinkingTextStyle::Ansi)
-        );
-    }
-
-    #[test]
-    fn style_is_plain_for_claude_desktop() {
-        // issue #48：Claude Desktop 不解析 ANSI，且原生 thinking 默认不展示
-        assert_eq!(
-            style_of("claude-cli/2.1.295 (external, claude-desktop-3p, agent-sdk/0.3.295)"),
-            Some(ThinkingTextStyle::Plain)
-        );
-        assert_eq!(
-            style_of("claude-cli/2.1.295 (external, claude-desktop, agent-sdk/0.3.295)"),
-            Some(ThinkingTextStyle::Plain)
-        );
-    }
-
-    #[test]
-    fn style_is_ansi_for_every_non_desktop_claude_code_entrypoint() {
-        // 只有 Desktop 被确认渲染不了 ANSI；其余入口保持原有行为，不能静默回退原生 thinking
-        // （issue #48 后续反馈：local-agent 因此看不到思考过程）
+    fn style_is_plain_for_all_claude_code_entrypoints() {
+        // Claude Code 的助手文本按 Markdown 渲染，不解析 ANSI；统一用无转义纯文本，
+        // 避免把 `ESC[2m` 显示成字面 `[2m`。
         for ua in [
+            "claude-cli/2.1.231 (external, cli)",
+            "claude-cli/2.1.231 (external, CLI)",
+            "claude-cli/2.1.295 (external, claude-desktop-3p, agent-sdk/0.3.295)",
+            "claude-cli/2.1.295 (external, claude-desktop, agent-sdk/0.3.295)",
             "claude-cli/2.1.295 (external, local-agent, agent-sdk/0.3.295)",
             "claude-cli/2.1.295 (external, claude-vscode, agent-sdk/0.3.295)",
             "claude-cli/2.1.295 (external, sdk-ts)",
             "claude-cli/2.1.295 (external, sdk-cli)",
             "claude-cli/2.1.295 (external, some-future-entrypoint)",
-        ] {
-            assert_eq!(style_of(ua), Some(ThinkingTextStyle::Ansi), "{ua}");
-        }
-    }
-
-    #[test]
-    fn style_keeps_legacy_behavior_when_entrypoint_unparseable() {
-        // 无括号 / 字段不足：沿用原有“Claude Code 前缀即放行”（Ansi）
-        for ua in [
             "claude-code/1.0",
             "claude-cli/2.1.231",
             "claude-cli/2.1.231 (external)",
             "claude-cli/2.1.231 (external, )",
         ] {
-            assert_eq!(style_of(ua), Some(ThinkingTextStyle::Ansi), "{ua}");
+            assert_eq!(style_of(ua), Some(ThinkingTextStyle::Plain), "{ua}");
         }
     }
 
