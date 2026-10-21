@@ -66,6 +66,12 @@ pub struct AppState {
     pub forward_suggestion_mode: Arc<std::sync::atomic::AtomicBool>,
 }
 
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AppState {
     /// 创建新的应用状态
     pub fn new() -> Self {

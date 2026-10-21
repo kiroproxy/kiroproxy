@@ -305,6 +305,26 @@ pub(crate) fn count_prefix_tokens(
     total
 }
 
+/// 估算输出 tokens
+pub(crate) fn estimate_output_tokens(content: &[serde_json::Value]) -> i32 {
+    let mut total = 0;
+
+    for block in content {
+        if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+            total += count_tokens(text) as i32;
+        }
+        if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+            // 工具调用开销
+            if let Some(input) = block.get("input") {
+                let input_str = serde_json::to_string(input).unwrap_or_default();
+                total += count_tokens(&input_str) as i32;
+            }
+        }
+    }
+
+    total.max(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -603,24 +623,4 @@ mod tests {
 
         assert_eq!(actual, expected);
     }
-}
-
-/// 估算输出 tokens
-pub(crate) fn estimate_output_tokens(content: &[serde_json::Value]) -> i32 {
-    let mut total = 0;
-
-    for block in content {
-        if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-            total += count_tokens(text) as i32;
-        }
-        if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
-            // 工具调用开销
-            if let Some(input) = block.get("input") {
-                let input_str = serde_json::to_string(input).unwrap_or_default();
-                total += count_tokens(&input_str) as i32;
-            }
-        }
-    }
-
-    total.max(1)
 }

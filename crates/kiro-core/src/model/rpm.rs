@@ -97,6 +97,12 @@ pub struct RpmSnapshot {
     pub by_api_key: HashMap<u32, u64>,
 }
 
+impl Default for RpmTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RpmTracker {
     /// 创建新的 RPM 追踪器
     pub fn new() -> Self {

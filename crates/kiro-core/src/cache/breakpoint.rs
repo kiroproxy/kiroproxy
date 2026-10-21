@@ -472,6 +472,10 @@ impl BreakpointCache {
         self.table.lock().len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// 计算本请求的缓存拆分。命中的条目立即刷新 TTL；新写入放进 `pending`，待 commit。
     pub fn plan(&self, profile: &CacheProfile) -> CachePlan {
         self.plan_at(profile, now_ms())
@@ -1017,7 +1021,7 @@ mod tests {
             cache.save_snapshot();
         }
         let cache = BreakpointCache::new(1024, Some(path.clone()));
-        assert!(cache.len() > 0, "重启后从快照恢复");
+        assert!(!cache.is_empty(), "重启后从快照恢复");
         let p = cache.plan(&build_profile(
             &cc_body(&[("hello", "hi")], "x"),
             "t",

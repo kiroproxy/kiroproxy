@@ -1,5 +1,9 @@
 // Copyright (c) 2026 Harllan He. Licensed under MIT.
 
+// 复制自上游的测试模块大量使用 Default::default() 后逐字段赋值，
+// 且模块名与父模块同名；这些 lint 不影响运行时行为，统一在 crate 级别允许。
+#![allow(clippy::field_reassign_with_default, clippy::module_inception)]
+
 pub mod admin;
 pub mod anthropic;
 pub mod app_logging;
