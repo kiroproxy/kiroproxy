@@ -109,9 +109,14 @@ export function SettingsPage() {
 
   const toggle = async (fn: () => Promise<ApplyResult>, label: string) => {
     try {
-      await fn()
+      const result = await fn()
+      setRestartRequired(result.restartRequired)
       await invalidate()
-      toast.success(`${label}${strings.settings.saveStatusSaved}`)
+      toast.success(
+        result.restartRequired.length > 0
+          ? `${label}：${strings.settings.saveStatusRestart}`
+          : `${label}${strings.settings.saveStatusSaved}`,
+      )
     } catch (error) {
       toast.error((error as { message?: string }).message ?? strings.errors.actionFailed)
     }
@@ -329,7 +334,47 @@ export function SettingsPage() {
             />
           </Row>
           <Row label={strings.settings.tlsBackend}>
-            <Badge variant="neutral">{data.tlsBackend}</Badge>
+            <Select
+              value={value("tlsBackend", data.tlsBackend)}
+              onValueChange={(value) =>
+                setForm((prev) => ({ ...prev, tlsBackend: String(value) }))
+              }
+            >
+              <SelectTrigger className="w-[140px]">
+                <span>{value("tlsBackend", data.tlsBackend)}</span>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="rustls">rustls</SelectItem>
+                <SelectItem value="native-tls">native-tls</SelectItem>
+              </SelectContent>
+            </Select>
+          </Row>
+          <Row label={strings.settings.region} desc={strings.settings.regionHint}>
+            <Input
+              className="w-[180px]"
+              value={value("region", data.region)}
+              onChange={(event) => setForm((prev) => ({ ...prev, region: event.target.value }))}
+            />
+          </Row>
+          <Row label={strings.accounts.authRegion}>
+            <Input
+              className="w-[180px]"
+              placeholder={data.region}
+              value={value("authRegion", data.authRegion ?? "")}
+              onChange={(event) =>
+                setForm((prev) => ({ ...prev, authRegion: event.target.value }))
+              }
+            />
+          </Row>
+          <Row label={strings.accounts.apiRegion}>
+            <Input
+              className="w-[180px]"
+              placeholder={data.region}
+              value={value("apiRegion", data.apiRegion ?? "")}
+              onChange={(event) =>
+                setForm((prev) => ({ ...prev, apiRegion: event.target.value }))
+              }
+            />
           </Row>
           <Row label={strings.settings.testConnection}>
             <Button
@@ -359,6 +404,10 @@ export function SettingsPage() {
                   proxyUrl: value("proxyUrl", data.proxyUrl ?? "") || null,
                   proxyUsername: value("proxyUsername", "") || null,
                   proxyPassword: value("proxyPassword", "") || null,
+                  tlsBackend: value("tlsBackend", data.tlsBackend) as "rustls" | "native-tls",
+                  region: value("region", data.region),
+                  authRegion: value("authRegion", data.authRegion ?? "") || null,
+                  apiRegion: value("apiRegion", data.apiRegion ?? "") || null,
                 })
               }
               disabled={busy}
@@ -428,21 +477,39 @@ export function SettingsPage() {
               {strings.common.save}
             </Button>
           </Row>
-          <Row label={strings.settings.promptCacheAccounting}>
-            <Badge variant={data.promptCacheAccounting ? "success" : "neutral"}>
-              {data.promptCacheAccounting ? strings.common.enabled : strings.common.disabled}
-            </Badge>
-          </Row>
-          <Row label={strings.settings.outputTokensIncludeThinking}>
-            <Badge variant={data.outputTokensIncludeThinking ? "success" : "neutral"}>
-              {data.outputTokensIncludeThinking ? strings.common.enabled : strings.common.disabled}
-            </Badge>
-          </Row>
-          <Row label={strings.settings.modelsOfficialAliases}>
-            <Badge variant={data.modelsOfficialAliases ? "success" : "neutral"}>
-              {data.modelsOfficialAliases ? strings.common.enabled : strings.common.disabled}
-            </Badge>
-          </Row>
+          <SwitchRow
+            label={strings.settings.promptCacheAccounting}
+            desc={strings.settings.promptCacheAccountingHint}
+            checked={data.promptCacheAccounting}
+            onChange={(next) =>
+              void toggle(
+                () => ipc.setPromptCacheAccounting(next),
+                strings.settings.promptCacheAccounting,
+              )
+            }
+          />
+          <SwitchRow
+            label={strings.settings.outputTokensIncludeThinking}
+            desc={strings.settings.outputTokensIncludeThinkingHint}
+            checked={data.outputTokensIncludeThinking}
+            onChange={(next) =>
+              void toggle(
+                () => ipc.setOutputTokensIncludeThinking(next),
+                strings.settings.outputTokensIncludeThinking,
+              )
+            }
+          />
+          <SwitchRow
+            label={strings.settings.modelsOfficialAliases}
+            desc={strings.settings.modelsOfficialAliasesHint}
+            checked={data.modelsOfficialAliases}
+            onChange={(next) =>
+              void toggle(
+                () => ipc.setModelsOfficialAliases(next),
+                strings.settings.modelsOfficialAliases,
+              )
+            }
+          />
         </Section>
       ) : null}
 

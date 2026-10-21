@@ -147,6 +147,40 @@ pub fn set_thinking_as_text(core: &Core, enabled: bool) -> Result<ApplyResult, I
     Ok(ApplyResult::applied(core, "thinkingAsText"))
 }
 
+pub fn set_output_tokens_include_thinking(
+    core: &Core,
+    enabled: bool,
+) -> Result<ApplyResult, IpcError> {
+    let _guard = core.persist_lock.lock();
+    core.config_store
+        .update_field("outputTokensIncludeThinking", json!(enabled))?;
+    core.config.write().output_tokens_include_thinking = enabled;
+    kiro_core::anthropic::set_output_tokens_include_thinking(enabled);
+    Ok(ApplyResult::applied(core, "outputTokensIncludeThinking"))
+}
+
+pub fn set_models_official_aliases(core: &Core, enabled: bool) -> Result<ApplyResult, IpcError> {
+    let _guard = core.persist_lock.lock();
+    core.config_store
+        .update_field("modelsOfficialAliases", json!(enabled))?;
+    core.config.write().models_official_aliases = enabled;
+    kiro_core::anthropic::set_models_official_aliases(enabled);
+    Ok(ApplyResult::applied(core, "modelsOfficialAliases"))
+}
+
+/// Prompt cache 断点记账需要把 `BreakpointCache` 注入代理 AppState，
+/// 因此只能通过重建代理运行时生效。
+pub fn set_prompt_cache_accounting(core: &Core, enabled: bool) -> Result<ApplyResult, IpcError> {
+    let _guard = core.persist_lock.lock();
+    core.config_store
+        .update_field("promptCacheAccounting", json!(enabled))?;
+    core.config.write().prompt_cache_accounting = enabled;
+    Ok(ApplyResult::needs_restart(
+        core,
+        vec!["promptCacheAccounting".to_string()],
+    ))
+}
+
 pub fn set_dump_kiro_body(core: &Core, enabled: bool) -> Result<ApplyResult, IpcError> {
     let _guard = core.persist_lock.lock();
     core.config_store

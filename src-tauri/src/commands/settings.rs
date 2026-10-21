@@ -56,6 +56,33 @@ pub fn set_thinking_as_text(
 }
 
 #[tauri::command]
+pub fn set_output_tokens_include_thinking(
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+) -> Result<ApplyResult, IpcError> {
+    let core = state.core()?;
+    settings::set_output_tokens_include_thinking(&core, enabled)
+}
+
+#[tauri::command]
+pub fn set_models_official_aliases(
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+) -> Result<ApplyResult, IpcError> {
+    let core = state.core()?;
+    settings::set_models_official_aliases(&core, enabled)
+}
+
+#[tauri::command]
+pub fn set_prompt_cache_accounting(
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+) -> Result<ApplyResult, IpcError> {
+    let core = state.core()?;
+    settings::set_prompt_cache_accounting(&core, enabled)
+}
+
+#[tauri::command]
 pub fn set_debug_logs(
     state: tauri::State<'_, AppState>,
     enabled: bool,

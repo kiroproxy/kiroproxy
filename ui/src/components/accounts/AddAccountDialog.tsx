@@ -381,19 +381,19 @@ export function AddAccountDialog({
           <DialogTitle>{strings.accounts.addTitle}</DialogTitle>
           <DialogDescription>{strings.accounts.emptyHint}</DialogDescription>
         </DialogHeader>
-        <Tabs defaultValue="kam" className="gap-3">
+        <Tabs defaultValue="kam" className="flex flex-col gap-3">
           <TabsList>
             <TabsTrigger value="kam">{strings.accounts.kamTab}</TabsTrigger>
             <TabsTrigger value="manual">{strings.accounts.manualTab}</TabsTrigger>
             <TabsTrigger value="kiroide">{strings.accounts.kiroIdeTab}</TabsTrigger>
           </TabsList>
-          <TabsContent value="kam">
+          <TabsContent value="kam" className="w-full">
             <KamForm onDone={done} />
           </TabsContent>
-          <TabsContent value="manual">
+          <TabsContent value="manual" className="w-full">
             <ManualForm onDone={done} />
           </TabsContent>
-          <TabsContent value="kiroide">
+          <TabsContent value="kiroide" className="w-full">
             <KiroIdeForm onDone={done} />
           </TabsContent>
         </Tabs>

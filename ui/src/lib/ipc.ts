@@ -122,6 +122,12 @@ export const ipc = {
   setClientTokenPassthrough: (enabled: boolean) =>
     call<ApplyResult>("set_client_token_passthrough", { enabled }),
   setThinkingAsText: (enabled: boolean) => call<ApplyResult>("set_thinking_as_text", { enabled }),
+  setOutputTokensIncludeThinking: (enabled: boolean) =>
+    call<ApplyResult>("set_output_tokens_include_thinking", { enabled }),
+  setModelsOfficialAliases: (enabled: boolean) =>
+    call<ApplyResult>("set_models_official_aliases", { enabled }),
+  setPromptCacheAccounting: (enabled: boolean) =>
+    call<ApplyResult>("set_prompt_cache_accounting", { enabled }),
   setDebugLogs: (enabled: boolean) => call<ApplyResult>("set_debug_logs", { enabled }),
   setDumpKiroBody: (enabled: boolean) => call<ApplyResult>("set_dump_kiro_body", { enabled }),
   setWriteChunkingMaxLines: (value: number) =>
