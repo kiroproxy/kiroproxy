@@ -1,0 +1,35 @@
+[package]
+name = "kiro-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1.0", features = ["full"] }
+reqwest = { version = "0.12", features = ["stream", "json", "socks", "rustls-tls", "rustls-tls-native-roots"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
+anyhow = "1.0"
+http = "1.0"
+futures = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.10", features = ["v1", "v4", "fast-rng"] }
+fastrand = "2"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+crc = "3"
+bytes = "1"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+urlencoding = "2"
+parking_lot = "0.12"
+subtle = "2.6"
+dirs = "5"
+ip2region = "0.1.0"
+tiktoken-rs = "0.12.0"
+
+[dev-dependencies]
+tempfile = "3"

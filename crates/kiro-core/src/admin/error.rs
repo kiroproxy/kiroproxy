@@ -1,0 +1,65 @@
+// Copyright (c) 2026 Harllan He. Licensed under MIT.
+//! Admin 服务错误类型：AdminServiceError 枚举，统一凭据/余额/模型操作的错误分类与 HTTP 映射。
+
+use std::fmt;
+
+use axum::http::StatusCode;
+
+use super::types::AdminErrorResponse;
+
+/// Admin 服务错误类型
+#[derive(Debug)]
+pub enum AdminServiceError {
+    /// 账号不存在
+    NotFound { id: u64 },
+
+    /// 上游服务调用失败（网络、API 错误等）
+    UpstreamError(String),
+
+    /// 内部状态错误
+    InternalError(String),
+
+    /// 账号无效（验证失败）
+    InvalidCredential(String),
+}
+
+impl fmt::Display for AdminServiceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AdminServiceError::NotFound { id } => {
+                write!(f, "账号不存在: {}", id)
+            }
+            AdminServiceError::UpstreamError(msg) => write!(f, "上游服务错误: {}", msg),
+            AdminServiceError::InternalError(msg) => write!(f, "内部错误: {}", msg),
+            AdminServiceError::InvalidCredential(msg) => write!(f, "账号无效: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for AdminServiceError {}
+
+impl AdminServiceError {
+    /// 获取对应的 HTTP 状态码
+    pub fn status_code(&self) -> StatusCode {
+        match self {
+            AdminServiceError::NotFound { .. } => StatusCode::NOT_FOUND,
+            AdminServiceError::UpstreamError(_) => StatusCode::BAD_GATEWAY,
+            AdminServiceError::InternalError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AdminServiceError::InvalidCredential(_) => StatusCode::BAD_REQUEST,
+        }
+    }
+
+    /// 转换为 API 错误响应
+    pub fn into_response(self) -> AdminErrorResponse {
+        match &self {
+            AdminServiceError::NotFound { .. } => AdminErrorResponse::not_found(self.to_string()),
+            AdminServiceError::UpstreamError(_) => AdminErrorResponse::api_error(self.to_string()),
+            AdminServiceError::InternalError(_) => {
+                AdminErrorResponse::internal_error(self.to_string())
+            }
+            AdminServiceError::InvalidCredential(_) => {
+                AdminErrorResponse::invalid_request(self.to_string())
+            }
+        }
+    }
+}

@@ -1,0 +1,1004 @@
+// Copyright (c) 2026 Harllan He. Licensed under MIT.
+//! Admin 业务服务层：凭据增删改查、余额查询与缓存、模型列表聚合、负载均衡模式与单账号 RPM 设置，桥接 handlers 与 token_manager/provider。
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use chrono::Utc;
+use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
+
+use crate::kiro::model::credentials::KiroCredentials;
+use crate::kiro::token_manager::{MultiTokenManager, UsageLimitsUnsupportedError};
+use crate::model::throttle_log::ThrottleLogStore;
+
+use super::error::AdminServiceError;
+use super::types::{
+    AddCredentialRequest, AddCredentialResponse, AdminModelItem, AdminModelsResponse,
+    BalanceResponse, CredentialStatusItem, CredentialsStatusResponse, LoadBalancingModeResponse,
+    SetLoadBalancingModeRequest, UpdateCredentialRequest,
+};
+
+/// 余额缓存过期时间（秒），5 分钟
+const BALANCE_CACHE_TTL_SECS: i64 = 300;
+
+/// 缓存的余额条目（含时间戳）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedBalance {
+    /// 缓存时间（Unix 秒）
+    cached_at: f64,
+    /// 缓存的余额数据
+    data: BalanceResponse,
+}
+
+/// 将上游 `ListAvailableModels` 返回的单条模型映射为 `AdminModelItem`（成功路径）
+///
+/// 纯函数，不涉及网络调用，可直接用 fake `AvailableModelInfo` 单测。
+/// 复用 `handlers::available_model_to_model` 完成 `Model` 映射，附加 Admin 专属的费率倍率。
+fn live_model_to_admin_item(
+    info: &crate::kiro::model::available_models::AvailableModelInfo,
+    release: &super::model_release::ModelReleaseTracker,
+) -> super::types::AdminModelItem {
+    super::types::AdminModelItem {
+        model: crate::anthropic::handlers::available_model_to_model(info),
+        rate_multiplier: info.rate_multiplier,
+        released_at: release.release_date(&info.model_id),
+    }
+}
+
+/// 将本地静态模型条目映射为 `AdminModelItem`（上游调用失败时的回退路径）
+///
+/// 纯函数，不涉及网络调用，可直接用 fake `Model` 单测。
+fn fallback_model_to_admin_item(
+    model: crate::anthropic::types::Model,
+    release: &super::model_release::ModelReleaseTracker,
+) -> super::types::AdminModelItem {
+    super::types::AdminModelItem {
+        released_at: release.release_date(&model.id),
+        model,
+        rate_multiplier: None,
+    }
+}
+
+/// 按模型家族（`owned_by`，即"提供方"）对模型列表做稳定分组
+///
+/// 家族内部相对顺序、以及各家族首次出现的先后顺序均保持不变，
+/// 仅消除不同家族条目相互穿插的情况（如 anthropic 模型中间夹杂 openai 模型）。
+fn group_models_by_family(
+    items: Vec<super::types::AdminModelItem>,
+) -> Vec<super::types::AdminModelItem> {
+    let mut family_order: Vec<String> = Vec::new();
+    for item in &items {
+        if !family_order.contains(&item.model.owned_by) {
+            family_order.push(item.model.owned_by.clone());
+        }
+    }
+    let mut items = items;
+    items.sort_by_key(|item| {
+        family_order
+            .iter()
+            .position(|f| f == &item.model.owned_by)
+            .unwrap_or(usize::MAX)
+    });
+    items
+}
+
+/// Admin 服务
+///
+/// 封装所有 Admin API 的业务逻辑
+pub struct AdminService {
+    token_manager: Arc<MultiTokenManager>,
+    balance_cache: Mutex<HashMap<u64, CachedBalance>>,
+    cache_path: Option<PathBuf>,
+    throttle_log_store: Option<Arc<ThrottleLogStore>>,
+    /// 模型首次出现日期自检（驱动模型页 NEW 徽章）
+    model_release: super::model_release::ModelReleaseTracker,
+}
+
+impl AdminService {
+    pub fn new(token_manager: Arc<MultiTokenManager>) -> Self {
+        let cache_path = token_manager
+            .cache_dir()
+            .map(|d| d.join("kiro_balance_cache.json"));
+
+        let balance_cache = Self::load_balance_cache_from(&cache_path);
+        let model_release = super::model_release::ModelReleaseTracker::load(
+            token_manager
+                .cache_dir()
+                .map(|d| d.join(super::model_release::SEEN_FILE_NAME)),
+        );
+
+        Self {
+            token_manager,
+            balance_cache: Mutex::new(balance_cache),
+            cache_path,
+            throttle_log_store: None,
+            model_release,
+        }
+    }
+
+    /// 注入 throttle log store，使 AdminService 能访问最近 7 天限流计数。
+    pub fn with_throttle_log_store(mut self, store: Arc<ThrottleLogStore>) -> Self {
+        self.throttle_log_store = Some(store);
+        self
+    }
+
+    /// 获取所有账号状态
+    pub fn get_all_credentials(&self) -> CredentialsStatusResponse {
+        let snapshot = self.token_manager.snapshot();
+        let since = Utc::now() - chrono::Duration::days(7);
+
+        let mut credentials: Vec<CredentialStatusItem> = snapshot
+            .entries
+            .into_iter()
+            .map(|entry| CredentialStatusItem {
+                id: entry.id,
+                priority: entry.priority,
+                disabled: entry.disabled,
+                failure_count: entry.failure_count,
+                is_current: entry.id == snapshot.current_id,
+                expires_at: entry.expires_at,
+                auth_method: entry.auth_method,
+                has_profile_arn: entry.has_profile_arn,
+                refresh_token_hash: entry.refresh_token_hash,
+                email: entry.email,
+                nickname: entry.nickname,
+                provider: entry.provider,
+                auth_region: entry.auth_region,
+                api_region: entry.api_region,
+                success_count: entry.success_count,
+                last_used_at: entry.last_used_at.clone(),
+                has_proxy: entry.has_proxy,
+                proxy_url: entry.proxy_url,
+                thinking_adaptive: entry.thinking_adaptive,
+                health_status: entry.health_status,
+                throttle_count: self
+                    .throttle_log_store
+                    .as_ref()
+                    .map(|s| s.count_within(entry.id, since) as u64)
+                    .unwrap_or(0),
+                disabled_reason: entry.disabled_reason,
+            })
+            .collect();
+
+        // 按优先级排序（数字越小优先级越高）
+        credentials.sort_by_key(|c| c.priority);
+
+        CredentialsStatusResponse {
+            total: snapshot.total,
+            available: snapshot.available,
+            current_id: snapshot.current_id,
+            credentials,
+        }
+    }
+
+    /// 设置账号禁用状态
+    pub async fn set_disabled(&self, id: u64, disabled: bool) -> Result<(), AdminServiceError> {
+        // 先获取当前账号 ID，用于判断是否需要切换
+        let snapshot = self.token_manager.snapshot();
+        let current_id = snapshot.current_id;
+
+        self.token_manager
+            .set_disabled(id, disabled)
+            .await
+            .map_err(|e| {
+                if disabled {
+                    self.classify_error(e, id)
+                } else {
+                    self.classify_enable_error(e, id)
+                }
+            })?;
+
+        // 只有禁用的是当前账号时才尝试切换到下一个
+        if disabled && id == current_id {
+            let _ = self.token_manager.switch_to_next();
+        }
+        Ok(())
+    }
+
+    /// 设置账号优先级
+    pub fn set_priority(&self, id: u64, priority: u32) -> Result<(), AdminServiceError> {
+        self.token_manager
+            .set_priority(id, priority)
+            .map_err(|e| self.classify_error(e, id))
+    }
+
+    /// 重置失败计数并重新启用
+    pub async fn reset_and_enable(&self, id: u64) -> Result<(), AdminServiceError> {
+        self.token_manager
+            .reset_and_enable(id)
+            .await
+            .map_err(|e| self.classify_enable_error(e, id))
+    }
+
+    /// 获取账号余额（带缓存）
+    pub async fn get_balance(&self, id: u64) -> Result<BalanceResponse, AdminServiceError> {
+        // 先查缓存
+        {
+            let cache = self.balance_cache.lock();
+            if let Some(cached) = cache.get(&id) {
+                let now = Utc::now().timestamp() as f64;
+                if (now - cached.cached_at) < BALANCE_CACHE_TTL_SECS as f64 {
+                    tracing::debug!("账号 #{} 余额命中缓存", id);
+                    return Ok(cached.data.clone());
+                }
+            }
+        }
+
+        // 缓存未命中或已过期，从上游获取
+        let balance = self.fetch_balance(id).await?;
+
+        // 更新缓存
+        {
+            let mut cache = self.balance_cache.lock();
+            cache.insert(
+                id,
+                CachedBalance {
+                    cached_at: Utc::now().timestamp() as f64,
+                    data: balance.clone(),
+                },
+            );
+        }
+        self.save_balance_cache();
+
+        Ok(balance)
+    }
+
+    /// 从上游获取余额（无缓存）
+    async fn fetch_balance(&self, id: u64) -> Result<BalanceResponse, AdminServiceError> {
+        let usage = match self.token_manager.get_usage_limits_for(id).await {
+            Ok(u) => u,
+            Err(e) if e.downcast_ref::<UsageLimitsUnsupportedError>().is_some() => {
+                // BuilderId 个人账号不支持 getUsageLimits，返回空 balance 而非报错
+                return Ok(BalanceResponse {
+                    id,
+                    subscription_title: None,
+                    current_usage: 0.0,
+                    usage_limit: 0.0,
+                    remaining: 0.0,
+                    usage_percentage: 0.0,
+                    next_reset_at: None,
+                });
+            }
+            Err(e) => return Err(self.classify_balance_error(e, id)),
+        };
+
+        let current_usage = usage.current_usage();
+        let usage_limit = usage.usage_limit();
+        let remaining = (usage_limit - current_usage).max(0.0);
+        let usage_percentage = if usage_limit > 0.0 {
+            current_usage / usage_limit * 100.0
+        } else {
+            0.0
+        };
+
+        Ok(BalanceResponse {
+            id,
+            subscription_title: usage.subscription_title().map(|s| s.to_string()),
+            current_usage,
+            usage_limit,
+            remaining,
+            usage_percentage,
+            next_reset_at: usage.next_date_reset,
+        })
+    }
+
+    /// 获取当前支持模型列表（直接来源于上游 ListAvailableModels 实时响应）
+    ///
+    /// 每次实时调用，不做缓存；上游调用失败（无可用账号、网络错误、非 2xx、
+    /// 反序列化失败）时记录日志并回退到本地静态模型表（`rate_multiplier` 全为 `None`）。
+    pub async fn list_admin_models(&self) -> Vec<super::types::AdminModelItem> {
+        let items = match self.token_manager.list_available_models().await {
+            Ok(resp) => {
+                // 仅在上游实时响应成功时登记：首次建立基线，之后新出现的模型记当天日期
+                let ids: Vec<&str> = resp.models.iter().map(|m| m.model_id.as_str()).collect();
+                self.model_release.observe(&ids);
+                resp.models
+                    .iter()
+                    .map(|m| live_model_to_admin_item(m, &self.model_release))
+                    .collect()
+            }
+            Err(e) => {
+                tracing::warn!("获取实时支持模型列表失败，回退到本地静态模型表: {}", e);
+                crate::anthropic::handlers::build_model_list()
+                    .into_iter()
+                    .map(|m| fallback_model_to_admin_item(m, &self.model_release))
+                    .collect()
+            }
+        };
+        group_models_by_family(items)
+    }
+
+    /// 获取指定账号支持的模型列表（实时查询，不回退静态表）
+    ///
+    /// 与 list_admin_models（取任意可用账号 + 失败回退静态表）不同，此方法按 id 指定账号，
+    /// 上游调用失败时直接报错，由前端弹窗展示错误（语义更准确：展示该账号当前真实支持的模型）。
+    pub async fn list_admin_models_for(
+        &self,
+        id: u64,
+    ) -> Result<AdminModelsResponse, AdminServiceError> {
+        let resp = self
+            .token_manager
+            .list_available_models_for(id)
+            .await
+            .map_err(|e| self.classify_balance_error(e, id))?;
+        // 单账号视图只查询、不登记：账号间模型集合可能不同，不应据此判定「新增」
+        let items: Vec<AdminModelItem> = resp
+            .models
+            .iter()
+            .map(|m| live_model_to_admin_item(m, &self.model_release))
+            .collect();
+        Ok(AdminModelsResponse {
+            object: "list".to_string(),
+            data: group_models_by_family(items),
+        })
+    }
+
+    /// 添加新账号
+    pub async fn add_credential(
+        &self,
+        req: AddCredentialRequest,
+    ) -> Result<AddCredentialResponse, AdminServiceError> {
+        // 构建账号对象
+        let email = req.email.clone();
+        let initially_disabled = req.disabled;
+        let new_cred = KiroCredentials {
+            id: None,
+            access_token: None,
+            sso_access_token: None,
+            refresh_token: Some(req.refresh_token),
+            profile_arn: req.profile_arn.filter(|s| !s.is_empty()),
+            expires_at: None,
+            auth_method: Some(req.auth_method),
+            client_id: req.client_id,
+            client_secret: req.client_secret,
+            provider: req.provider,
+            token_endpoint: req.token_endpoint,
+            scopes: req.scopes,
+            priority: req.priority,
+            region: req.region,
+            auth_region: req.auth_region,
+            api_region: req.api_region,
+            machine_id: req.machine_id,
+            email: req.email,
+            nickname: req.nickname,
+            subscription_title: None, // 将在首次获取使用额度时自动更新
+            proxy_url: req.proxy_url,
+            proxy_username: req.proxy_username,
+            proxy_password: req.proxy_password,
+            disabled: initially_disabled,
+            endpoint: None,
+            thinking_adaptive: true, // 新添加的账号默认注入 thinking 字段（默认开启）
+        };
+
+        // 调用 token_manager 添加账号
+        let credential_id = self
+            .token_manager
+            .add_credential(new_cred)
+            .await
+            .map_err(|e| self.classify_add_error(e))?;
+
+        // 导入流程会自行验活禁用账号，避免重复请求额度接口
+        if !initially_disabled {
+            let tm = self.token_manager.clone();
+            tokio::spawn(async move {
+                if let Err(e) = tm.get_usage_limits_for(credential_id).await {
+                    if e.downcast_ref::<UsageLimitsUnsupportedError>().is_some() {
+                        tracing::debug!(
+                            "账号 #{} 不支持 getUsageLimits 查询（BuilderId 个人账号），跳过订阅等级获取",
+                            credential_id
+                        );
+                    } else {
+                        tracing::warn!("添加账号后获取订阅等级失败（不影响账号添加）: {}", e);
+                    }
+                }
+            });
+        }
+
+        Ok(AddCredentialResponse {
+            success: true,
+            // social/idc 账号缺 profileArn 已由 add_credential 自动补全并持久化；
+            // external_idp（企业 IdC）真实 ARN 因租户而异，无法代填，缺失时由数据面
+            // 400 → ProfileArnMissing 首即禁用兜底，无需在此重复提示
+            message: format!("账号添加成功，ID: {}", credential_id),
+            credential_id,
+            email,
+        })
+    }
+
+    /// 删除账号
+    pub async fn delete_credential(&self, id: u64) -> Result<(), AdminServiceError> {
+        self.token_manager
+            .delete_credential(id)
+            .await
+            .map_err(|e| self.classify_delete_error(e, id))?;
+
+        // 清理已删除账号的余额缓存
+        {
+            let mut cache = self.balance_cache.lock();
+            cache.remove(&id);
+        }
+        self.save_balance_cache();
+
+        Ok(())
+    }
+
+    /// 更新账号配置
+    pub async fn update_credential(
+        &self,
+        id: u64,
+        req: UpdateCredentialRequest,
+    ) -> Result<(), AdminServiceError> {
+        self.token_manager
+            .update_credential(id, req)
+            .await
+            .map_err(|e| self.classify_update_error(e, id))?;
+
+        // 清理该账号的余额缓存（配置变更后需要重新获取）
+        {
+            let mut cache = self.balance_cache.lock();
+            cache.remove(&id);
+        }
+        self.save_balance_cache();
+
+        Ok(())
+    }
+
+    /// 构建账号 ID -> 显示标签（nickname 优先，其次 email，都没有则用 #id）的映射
+    pub fn credential_labels(&self) -> std::collections::HashMap<u64, String> {
+        let snapshot = self.token_manager.snapshot();
+        snapshot
+            .entries
+            .into_iter()
+            .map(|e| {
+                let label = e
+                    .nickname
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| e.email.filter(|s| !s.is_empty()))
+                    .unwrap_or_else(|| format!("#{}", e.id));
+                (e.id, label)
+            })
+            .collect()
+    }
+
+    /// 获取负载均衡模式
+    pub fn get_load_balancing_mode(&self) -> LoadBalancingModeResponse {
+        LoadBalancingModeResponse {
+            mode: self.token_manager.get_load_balancing_mode(),
+        }
+    }
+
+    /// 设置负载均衡模式
+    pub fn set_load_balancing_mode(
+        &self,
+        req: SetLoadBalancingModeRequest,
+    ) -> Result<LoadBalancingModeResponse, AdminServiceError> {
+        // 验证模式值
+        if req.mode != "priority" && req.mode != "balanced" {
+            return Err(AdminServiceError::InvalidCredential(
+                "mode 必须是 'priority' 或 'balanced'".to_string(),
+            ));
+        }
+
+        self.token_manager
+            .set_load_balancing_mode(req.mode.clone())
+            .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+
+        Ok(LoadBalancingModeResponse { mode: req.mode })
+    }
+
+    /// 热切换每账号 RPM 上限（0 = 不限），仅影响运行时，持久化由 handler 负责
+    pub fn set_max_rpm_per_credential(&self, value: u32) {
+        self.token_manager.set_max_rpm_per_credential(value);
+    }
+
+    /// 获取每账号 RPM 上限运行时当前值（含热切换后的值；0 = 不限）
+    pub fn max_rpm_per_credential(&self) -> u32 {
+        self.token_manager.max_rpm_per_credential()
+    }
+
+    // ============ 余额缓存持久化 ============
+
+    fn load_balance_cache_from(cache_path: &Option<PathBuf>) -> HashMap<u64, CachedBalance> {
+        let path = match cache_path {
+            Some(p) => p,
+            None => return HashMap::new(),
+        };
+
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => return HashMap::new(),
+        };
+
+        // 文件中使用字符串 key 以兼容 JSON 格式
+        let map: HashMap<String, CachedBalance> = match serde_json::from_str(&content) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("解析余额缓存失败，将忽略: {}", e);
+                return HashMap::new();
+            }
+        };
+
+        let now = Utc::now().timestamp() as f64;
+        map.into_iter()
+            .filter_map(|(k, v)| {
+                let id = k.parse::<u64>().ok()?;
+                // 丢弃超过 TTL 的条目
+                if (now - v.cached_at) < BALANCE_CACHE_TTL_SECS as f64 {
+                    Some((id, v))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn save_balance_cache(&self) {
+        let path = match &self.cache_path {
+            Some(p) => p,
+            None => return,
+        };
+
+        // 持有锁期间完成序列化和写入，防止并发损坏
+        let cache = self.balance_cache.lock();
+        let map: HashMap<String, &CachedBalance> =
+            cache.iter().map(|(k, v)| (k.to_string(), v)).collect();
+
+        match serde_json::to_string_pretty(&map) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(path, json) {
+                    tracing::warn!("保存余额缓存失败: {}", e);
+                }
+            }
+            Err(e) => tracing::warn!("序列化余额缓存失败: {}", e),
+        }
+    }
+
+    // ============ 错误分类 ============
+
+    /// 分类不涉及上游请求的简单操作错误
+    fn classify_error(&self, e: anyhow::Error, id: u64) -> AdminServiceError {
+        let msg = e.to_string();
+        if msg.contains("不存在") {
+            AdminServiceError::NotFound { id }
+        } else {
+            AdminServiceError::InternalError(msg)
+        }
+    }
+
+    /// 分类启用账号前的订阅/额度校验错误
+    fn classify_enable_error(&self, e: anyhow::Error, id: u64) -> AdminServiceError {
+        let details = format!("{e:#}");
+        if e.downcast_ref::<UsageLimitsUnsupportedError>().is_some()
+            || details.contains("订阅等级为空")
+        {
+            return AdminServiceError::InvalidCredential(format!(
+                "无法确认账号 #{} 的订阅等级，账号未启用",
+                id
+            ));
+        }
+        self.classify_balance_error(e, id)
+    }
+
+    /// 分类余额查询错误（可能涉及上游 API 调用）
+    fn classify_balance_error(&self, e: anyhow::Error, id: u64) -> AdminServiceError {
+        let details = format!("{e:#}");
+
+        // 1. 账号不存在
+        if details.contains("不存在") {
+            return AdminServiceError::NotFound { id };
+        }
+
+        // 2. 上游服务错误特征：HTTP 响应错误或网络错误
+        let is_upstream_error =
+            // HTTP 响应错误（来自 refresh_*_token 的错误消息）
+            details.contains("凭证已过期或无效") ||
+            details.contains("权限不足") ||
+            details.contains("已被限流") ||
+            details.contains("服务器错误") ||
+            details.contains("Token 刷新失败") ||
+            details.contains("暂时不可用") ||
+            // 网络错误（reqwest 错误）
+            details.contains("error trying to connect") ||
+            details.contains("connection") ||
+            details.contains("timeout") ||
+            details.contains("timed out");
+
+        if is_upstream_error {
+            AdminServiceError::UpstreamError(format!("账号 #{} 的上游服务暂时不可用", id))
+        } else {
+            // 3. 默认归类为内部错误（本地验证失败、配置错误等）
+            // 包括：缺少 refreshToken、refreshToken 已被截断、无法生成 machineId 等
+            AdminServiceError::InternalError(format!("账号 #{} 操作失败", id))
+        }
+    }
+
+    /// 分类添加账号错误
+    fn classify_add_error(&self, e: anyhow::Error) -> AdminServiceError {
+        let msg = e.to_string();
+
+        // 账号验证失败（refreshToken 无效、格式错误等）
+        let is_invalid_credential = msg.contains("缺少 refreshToken")
+            || msg.contains("refreshToken 为空")
+            || msg.contains("refreshToken 已被截断")
+            || msg.contains("账号已存在")
+            || msg.contains("refreshToken 重复")
+            || msg.contains("凭证已过期或无效")
+            || msg.contains("权限不足")
+            || msg.contains("已被限流");
+
+        if is_invalid_credential {
+            AdminServiceError::InvalidCredential(msg)
+        } else if msg.contains("error trying to connect")
+            || msg.contains("connection")
+            || msg.contains("timeout")
+        {
+            AdminServiceError::UpstreamError(msg)
+        } else {
+            AdminServiceError::InternalError(msg)
+        }
+    }
+
+    /// 分类删除账号错误
+    fn classify_delete_error(&self, e: anyhow::Error, id: u64) -> AdminServiceError {
+        let msg = e.to_string();
+        if msg.contains("不存在") {
+            AdminServiceError::NotFound { id }
+        } else {
+            AdminServiceError::InternalError(msg)
+        }
+    }
+
+    /// 转发 sticky cache 命中/未命中计数
+    pub fn sticky_metrics(&self) -> (u64, u64) {
+        self.token_manager.sticky_metrics()
+    }
+
+    /// 分类更新账号错误
+    fn classify_update_error(&self, e: anyhow::Error, id: u64) -> AdminServiceError {
+        let msg = e.to_string();
+        if msg.contains("不存在") {
+            AdminServiceError::NotFound { id }
+        } else if msg.contains("凭证已过期或无效")
+            || msg.contains("权限不足")
+            || msg.contains("已被限流")
+            || msg.contains("error trying to connect")
+            || msg.contains("timeout")
+        {
+            AdminServiceError::UpstreamError(msg)
+        } else {
+            AdminServiceError::InvalidCredential(msg)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::admin::model_release::ModelReleaseTracker;
+    use crate::admin::types::AdminModelItem;
+    use crate::anthropic::types::Model;
+    use crate::kiro::model::available_models::{
+        AvailableModelInfo, AvailableModelsResponse, TokenLimits,
+    };
+    use crate::kiro::token_manager::MultiTokenManager;
+    use crate::model::config::Config;
+    use chrono::Duration;
+
+    fn fake_info(
+        model_id: &str,
+        model_name: &str,
+        rate: Option<f64>,
+        max_in: u64,
+        max_out: u64,
+    ) -> AvailableModelInfo {
+        AvailableModelInfo {
+            model_id: model_id.to_string(),
+            model_name: model_name.to_string(),
+            rate_multiplier: rate,
+            token_limits: TokenLimits {
+                max_input_tokens: max_in,
+                max_output_tokens: max_out,
+            },
+            additional_model_request_fields_schema: None,
+        }
+    }
+
+    #[test]
+    fn test_live_model_to_admin_item_maps_fields() {
+        let info = fake_info(
+            "claude-sonnet-4.6",
+            "Claude Sonnet 4.6",
+            Some(1.3),
+            1_000_000,
+            64_000,
+        );
+        let item = live_model_to_admin_item(&info, &ModelReleaseTracker::in_memory());
+        assert_eq!(item.model.id, "claude-sonnet-4.6");
+        assert_eq!(item.model.display_name, "Claude Sonnet 4.6");
+        assert_eq!(item.model.max_tokens, 64_000);
+        assert_eq!(item.model.owned_by, "anthropic");
+        assert_eq!(item.rate_multiplier, Some(1.3));
+
+        let unknown = fake_info("foo-model", "Foo Model", None, 100, 50);
+        let unknown_item = live_model_to_admin_item(&unknown, &ModelReleaseTracker::in_memory());
+        assert_eq!(unknown_item.model.owned_by, "unknown");
+        assert_eq!(unknown_item.rate_multiplier, None);
+    }
+
+    #[test]
+    fn test_fallback_model_to_admin_item_clears_rate_multiplier() {
+        let model = Model {
+            id: "claude-3-5-sonnet-20241022".to_string(),
+            object: "model".to_string(),
+            created: 1729555200,
+            owned_by: "anthropic".to_string(),
+            display_name: "Claude 3.5 Sonnet".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: 8192,
+        };
+        let expected_id = model.id.clone();
+        let item = fallback_model_to_admin_item(model, &ModelReleaseTracker::in_memory());
+        assert_eq!(item.model.id, expected_id);
+        assert_eq!(item.rate_multiplier, None);
+    }
+
+    #[test]
+    fn test_enable_classifies_unsupported_usage_query_as_invalid_credential() {
+        let manager = MultiTokenManager::new(Config::default(), vec![], None, None, false).unwrap();
+        let service = AdminService::new(Arc::new(manager));
+
+        let error =
+            service.classify_enable_error(anyhow::Error::new(UsageLimitsUnsupportedError), 1);
+
+        assert_eq!(error.status_code(), axum::http::StatusCode::BAD_REQUEST);
+        match error {
+            AdminServiceError::InvalidCredential(message) => {
+                assert!(message.contains("账号未启用"));
+                assert!(message.contains("无法确认账号 #1 的订阅等级"));
+            }
+            other => panic!("预期 InvalidCredential，实际: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_enable_classification_uses_error_chain_without_exposing_details() {
+        let manager = MultiTokenManager::new(Config::default(), vec![], None, None, false).unwrap();
+        let service = AdminService::new(Arc::new(manager));
+        let error = anyhow::Error::msg("timed out: proxy=http://user:password@internal")
+            .context("启用前获取订阅/额度失败");
+
+        let classified = service.classify_enable_error(error, 1);
+
+        match classified {
+            AdminServiceError::UpstreamError(message) => {
+                assert_eq!(message, "账号 #1 的上游服务暂时不可用");
+            }
+            other => panic!("预期 UpstreamError，实际: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_group_models_by_family_keeps_family_contiguous() {
+        fn item(id: &str, owned_by: &str) -> AdminModelItem {
+            AdminModelItem {
+                model: Model {
+                    id: id.to_string(),
+                    object: "model".to_string(),
+                    created: 0,
+                    owned_by: owned_by.to_string(),
+                    display_name: id.to_string(),
+                    model_type: "chat".to_string(),
+                    max_tokens: 64_000,
+                },
+                rate_multiplier: None,
+                released_at: None,
+            }
+        }
+
+        let items = vec![
+            item("auto", "kiro"),
+            item("claude-opus-5", "anthropic"),
+            item("claude-sonnet-5", "anthropic"),
+            item("gpt-5.6-sol", "openai"),
+            item("gpt-5.6-terra", "openai"),
+            item("claude-opus-4.7", "anthropic"),
+            item("deepseek-3.2", "deepseek"),
+        ];
+
+        let sorted = group_models_by_family(items);
+        let ids: Vec<&str> = sorted.iter().map(|i| i.model.id.as_str()).collect();
+
+        assert_eq!(
+            ids,
+            vec![
+                "auto",
+                "claude-opus-5",
+                "claude-sonnet-5",
+                "claude-opus-4.7",
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "deepseek-3.2",
+            ]
+        );
+    }
+
+    /// 基于真实抓包响应体结构构造的 JSON 字面量（字段名/嵌套与
+    /// `ListAvailableModels` 实际返回一致），验证反序列化字段映射；
+    /// 第三条模型故意缺失 `modelName`/`tokenLimits`，验证 `#[serde(default)]`
+    /// 容错不会导致整个 `models[]` 解析失败
+    #[test]
+    fn test_available_models_response_deserializes_real_capture_shape() {
+        let raw = r#"{
+            "defaultModel": { "modelId": "auto" },
+            "models": [
+                {
+                    "description": "自动选择模型",
+                    "modelId": "auto",
+                    "modelName": "Auto",
+                    "promptCaching": {
+                        "maximumCacheCheckpointsPerRequest": 4,
+                        "minimumTokensPerCacheCheckpoint": 1024,
+                        "supportsPromptCaching": true
+                    },
+                    "rateMultiplier": 1.0,
+                    "rateUnit": "Credit",
+                    "supportedInputTypes": ["TEXT"],
+                    "tokenLimits": { "maxInputTokens": 1000000, "maxOutputTokens": 64000 }
+                },
+                {
+                    "description": "Claude Sonnet 5",
+                    "modelId": "claude-sonnet-5",
+                    "modelName": "Claude Sonnet 5",
+                    "promptCaching": {
+                        "maximumCacheCheckpointsPerRequest": 4,
+                        "minimumTokensPerCacheCheckpoint": 1024,
+                        "supportsPromptCaching": true
+                    },
+                    "rateMultiplier": 1.3,
+                    "rateUnit": "Credit",
+                    "supportedInputTypes": ["TEXT", "IMAGE"],
+                    "tokenLimits": { "maxInputTokens": 1000000, "maxOutputTokens": 64000 },
+                    "additionalModelRequestFieldsSchema": { "type": "object", "properties": {} }
+                },
+                {
+                    "additionalModelRequestFieldsSchema": {
+                        "type": "object",
+                        "properties": {
+                            "thinking": {
+                                "type": "object",
+                                "properties": {
+                                    "type": {
+                                        "type": "string",
+                                        "enum": ["adaptive", "disabled"]
+                                    },
+                                    "display": {
+                                        "type": "string",
+                                        "enum": ["summarized", "omitted"]
+                                    }
+                                },
+                                "required": ["type"]
+                            },
+                            "output_config": {
+                                "type": "object",
+                                "properties": {
+                                    "effort": {
+                                        "type": "string",
+                                        "enum": ["low", "medium", "high", "xhigh", "max"],
+                                        "default": "high"
+                                    }
+                                }
+                            },
+                            "max_tokens": {
+                                "type": "integer",
+                                "minimum": 1024,
+                                "maximum": 128000
+                            }
+                        },
+                        "additionalProperties": false
+                    },
+                    "description": "Experimental preview of Claude Opus 5 model with 1M context window",
+                    "modelId": "claude-opus-5",
+                    "modelName": "claude-opus-5",
+                    "promptCaching": {
+                        "maximumCacheCheckpointsPerRequest": 4,
+                        "minimumTokensPerCacheCheckpoint": 1024,
+                        "supportsPromptCaching": true
+                    },
+                    "rateMultiplier": 2.2,
+                    "rateUnit": "Credit",
+                    "supportedInputTypes": ["TEXT", "IMAGE"],
+                    "tokenLimits": { "maxInputTokens": 1000000, "maxOutputTokens": 128000 }
+                },
+                {
+                    "modelId": "legacy-drift-model",
+                    "rateMultiplier": 0.5
+                }
+            ]
+        }"#;
+
+        let parsed: AvailableModelsResponse =
+            serde_json::from_str(raw).expect("应能反序列化真实抓包结构");
+        assert_eq!(parsed.models.len(), 4);
+
+        let auto = &parsed.models[0];
+        assert_eq!(auto.model_id, "auto");
+        assert_eq!(auto.model_name, "Auto");
+        assert_eq!(auto.rate_multiplier, Some(1.0));
+        assert_eq!(auto.token_limits.max_input_tokens, 1_000_000);
+        assert_eq!(auto.token_limits.max_output_tokens, 64_000);
+
+        let sonnet = &parsed.models[1];
+        assert_eq!(sonnet.model_id, "claude-sonnet-5");
+        assert_eq!(sonnet.rate_multiplier, Some(1.3));
+
+        let opus5 = parsed
+            .models
+            .iter()
+            .find(|m| m.model_id == "claude-opus-5")
+            .expect("claude-opus-5 抓包条目缺失");
+        assert_eq!(opus5.model_name, "claude-opus-5");
+        assert_eq!(opus5.rate_multiplier, Some(2.2));
+        assert_eq!(opus5.token_limits.max_input_tokens, 1_000_000);
+        assert_eq!(opus5.token_limits.max_output_tokens, 128_000);
+        assert!(opus5.additional_model_request_fields_schema.is_some());
+
+        // 缺失 modelName/tokenLimits 时应回退到默认值，反序列化不失败
+        let drift = &parsed.models[3];
+        assert_eq!(drift.model_id, "legacy-drift-model");
+        assert_eq!(drift.model_name, "");
+        assert_eq!(drift.token_limits.max_input_tokens, 0);
+        assert_eq!(drift.token_limits.max_output_tokens, 0);
+        assert_eq!(drift.rate_multiplier, Some(0.5));
+    }
+
+    /// inline 测试 helper：构造一个有效 access_token/expires_at 的 KiroCredentials
+    /// （替代 token_manager.rs 内私有的 make_valid_cred）
+    fn make_valid_cred(token: &str) -> KiroCredentials {
+        let mut c = KiroCredentials::default();
+        c.access_token = Some(token.to_string());
+        c.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        c
+    }
+
+    /// 验证 `get_all_credentials` 返回的 `throttle_count` 取自 store 的 7 天窗口计数
+    /// （5 条 8 天前 + 3 条 近 7 天 → 期望 3；无关 id → 0）
+    #[test]
+    fn get_all_credentials_uses_seven_day_count() {
+        // 准备 store：5 条 8 天前（窗口外）+ 3 条 当前（窗口内）
+        let store = crate::model::throttle_log::ThrottleLogStore::empty("unused");
+        let now = Utc::now();
+        for _ in 0..5 {
+            store.record(1, "api", 429, "{}", None);
+        }
+        store.with_events_for_test(1, |events| {
+            for e in events.iter_mut() {
+                e.created_at = now - Duration::days(8);
+            }
+        });
+        for _ in 0..3 {
+            store.record(1, "api", 429, "{}", None);
+        }
+        // 无关 id 的事件，应被过滤
+        store.record(999, "api", 429, "{}", None);
+
+        // 构造一个真实 entry
+        let cred = make_valid_cred("t1");
+        let manager = Arc::new(
+            MultiTokenManager::new(Config::default(), vec![cred], None, None, false)
+                .expect("构造 MultiTokenManager 失败"),
+        );
+        let service = AdminService::new(manager).with_throttle_log_store(Arc::new(store));
+
+        let resp = service.get_all_credentials();
+        assert_eq!(resp.total, 1, "账号总数应为 1");
+        let item = resp
+            .credentials
+            .iter()
+            .find(|c| c.id == 1)
+            .expect("id=1 的账号应存在");
+        // 5 条 8 天前（窗口外）+ 3 条 当前（窗口内）→ 期望 3
+        assert_eq!(item.throttle_count, 3);
+    }
+}

@@ -1,0 +1,261 @@
+// Copyright (c) 2026 Harllan He. Licensed under MIT.
+//! Anthropic 层中间件与共享状态：AppState 构建器（装配 provider/API key/usage/RPM/fingerprint 追踪器）、auth_middleware 认证与限流、CORS 配置。
+
+use std::sync::Arc;
+
+use axum::{
+    body::Body,
+    extract::State,
+    http::{Request, StatusCode},
+    middleware::Next,
+    response::{IntoResponse, Json, Response},
+};
+use parking_lot::RwLock;
+
+use crate::common::auth;
+use crate::kiro::provider::KiroProvider;
+use crate::model::api_key::{ApiKeyAuthResult, ApiKeyManager};
+use crate::model::rpm::RpmTracker;
+use crate::model::usage::UsageTracker;
+
+use super::types::{ErrorResponse, Model};
+
+/// `/v1/models` 动态列表缓存条目
+///
+/// `fetched_at` 用于 TTL 判断（`Instant::elapsed()`）；TTL 秒数取自 `Config::model_cache_ttl_secs`。
+#[derive(Clone)]
+pub struct CachedModels {
+    /// 缓存的模型列表
+    pub models: Vec<Model>,
+    /// 缓存写入时刻
+    pub fetched_at: std::time::Instant,
+}
+
+/// 已认证的 API Key 上下文（注入到 request extensions）
+#[derive(Clone, Debug)]
+pub struct ApiKeyContext {
+    /// API Key ID
+    pub id: u32,
+    /// 绑定的账号 ID 列表，None 表示不限制
+    pub bound_credential_ids: Option<Vec<u64>>,
+}
+
+/// 应用共享状态
+#[derive(Clone)]
+pub struct AppState {
+    /// Kiro Provider（可选，用于实际 API 调用）
+    pub kiro_provider: Option<Arc<KiroProvider>>,
+    /// Profile ARN（可选，用于请求）
+    pub profile_arn: Option<String>,
+    /// API Key 管理器（可选，启用多用户 API Key）
+    pub api_key_manager: Option<Arc<ApiKeyManager>>,
+    /// 用量追踪器（可选，启用用量追踪）
+    pub usage_tracker: Option<Arc<UsageTracker>>,
+    /// RPM 追踪器（可选，启用 RPM 实时监控）
+    pub rpm_tracker: Option<Arc<RpmTracker>>,
+    /// Prompt cache 指纹追踪器（替代末层兜底）
+    pub fingerprint_tracker: Option<Arc<crate::cache::fingerprint::FingerprintTracker>>,
+    /// 按 cache_control 断点模拟的缓存记账表（None = 未开启 promptCacheAccounting）
+    pub breakpoint_cache: Option<Arc<crate::cache::breakpoint::BreakpointCache>>,
+    /// `/v1/models` 动态列表缓存（TTL 见 `Config::model_cache_ttl_secs`），初始为空
+    pub model_cache: Arc<RwLock<Option<CachedModels>>>,
+    /// Suggestion Mode 输入建议请求放行开关（初始值来自 Config::forward_suggestion_mode）
+    ///
+    /// Arc<AtomicBool> 支持运行时热切换：Admin API（PUT /api/admin/config/suggestion-mode）
+    /// 修改后即时生效，无需重启；请求 handler 每次读取最新值。
+    pub forward_suggestion_mode: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl AppState {
+    /// 创建新的应用状态
+    pub fn new() -> Self {
+        Self {
+            kiro_provider: None,
+            profile_arn: None,
+            api_key_manager: None,
+            usage_tracker: None,
+            rpm_tracker: None,
+            fingerprint_tracker: None,
+            breakpoint_cache: None,
+            model_cache: Arc::new(RwLock::new(None)),
+            forward_suggestion_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    /// 设置 KiroProvider
+    pub fn with_kiro_provider(mut self, provider: KiroProvider) -> Self {
+        self.kiro_provider = Some(Arc::new(provider));
+        self
+    }
+
+    /// 设置 Profile ARN
+    pub fn with_profile_arn(mut self, arn: impl Into<String>) -> Self {
+        self.profile_arn = Some(arn.into());
+        self
+    }
+
+    /// 设置 API Key 管理器
+    pub fn with_api_key_manager(mut self, manager: Arc<ApiKeyManager>) -> Self {
+        self.api_key_manager = Some(manager);
+        self
+    }
+
+    /// 设置用量追踪器
+    pub fn with_usage_tracker(mut self, tracker: Arc<UsageTracker>) -> Self {
+        self.usage_tracker = Some(tracker);
+        self
+    }
+
+    /// 设置 RPM 追踪器
+    pub fn with_rpm_tracker(mut self, tracker: Arc<RpmTracker>) -> Self {
+        self.rpm_tracker = Some(tracker);
+        self
+    }
+
+    /// 设置 Suggestion Mode 放行开关（初始值；main.rs 实际通过 `_arc` 版本注入共享实例）
+    pub fn with_forward_suggestion_mode(self, forward: bool) -> Self {
+        self.forward_suggestion_mode
+            .store(forward, std::sync::atomic::Ordering::Relaxed);
+        self
+    }
+
+    /// 替换为外部共享的开关实例（与 AdminState 共用同一 Arc，实现热切换联动）
+    pub fn with_forward_suggestion_mode_arc(
+        mut self,
+        flag: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        self.forward_suggestion_mode = flag;
+        self
+    }
+
+    /// 设置 Prompt cache 指纹追踪器
+    pub fn with_fingerprint_tracker(
+        mut self,
+        tracker: Arc<crate::cache::fingerprint::FingerprintTracker>,
+    ) -> Self {
+        self.fingerprint_tracker = Some(tracker);
+        self
+    }
+
+    /// 设置断点缓存记账表
+    pub fn with_breakpoint_cache(
+        mut self,
+        cache: Arc<crate::cache::breakpoint::BreakpointCache>,
+    ) -> Self {
+        self.breakpoint_cache = Some(cache);
+        self
+    }
+}
+
+/// API Key 认证中间件
+///
+/// 认证优先级：
+/// 1. 子 API Key（ApiKeyManager）→ 检查启用/过期/额度
+/// 2. 不匹配 → 401
+pub async fn auth_middleware(
+    State(state): State<AppState>,
+    mut request: Request<Body>,
+    next: Next,
+) -> Response {
+    let Some(key) = auth::extract_api_key(&request) else {
+        let error = ErrorResponse::authentication_error();
+        return (StatusCode::UNAUTHORIZED, Json(error)).into_response();
+    };
+
+    // 1. 尝试子 API Key 认证
+    if let Some(manager) = &state.api_key_manager {
+        match manager.authenticate(&key) {
+            ApiKeyAuthResult::Valid {
+                id,
+                name,
+                spending_limit,
+                limit_unit,
+                bound_credential_ids,
+            } => {
+                // 懒激活：首次使用时激活 key
+                if let Err(e) = manager.activate_key(id) {
+                    tracing::warn!(api_key_id = id, error = %e, "激活 API Key 失败");
+                }
+
+                // 额度检查：limit_unit = "credits" 按真实 credits 累计计量，否则按美元估算计量
+                if let (Some(limit), Some(tracker)) = (spending_limit, &state.usage_tracker) {
+                    let is_credits = limit_unit.eq_ignore_ascii_case("credits");
+                    let used = if is_credits {
+                        tracker.get_total_credits(id)
+                    } else {
+                        tracker.get_total_cost(id)
+                    };
+                    if used >= limit {
+                        tracing::warn!(
+                            api_key_id = id,
+                            api_key_name = %name,
+                            used = used,
+                            spending_limit = limit,
+                            limit_unit = %limit_unit,
+                            "API Key 额度已用尽"
+                        );
+                        let message = if is_credits {
+                            format!(
+                                "API key spending limit exceeded. Used: {:.2} credits, Limit: {:.2} credits",
+                                used, limit
+                            )
+                        } else {
+                            format!(
+                                "API key spending limit exceeded. Used: ${:.2}, Limit: ${:.2}",
+                                used, limit
+                            )
+                        };
+                        let error = ErrorResponse::new("forbidden", message);
+                        return (StatusCode::FORBIDDEN, Json(error)).into_response();
+                    }
+                }
+
+                tracing::debug!(api_key_id = id, api_key_name = %name, "子 API Key 认证通过");
+                request.extensions_mut().insert(ApiKeyContext {
+                    id,
+                    bound_credential_ids,
+                });
+                return next.run(request).await;
+            }
+            ApiKeyAuthResult::Expired => {
+                let error = ErrorResponse::new(
+                    "forbidden",
+                    "API key has expired. Please contact the administrator to renew it.",
+                );
+                return (StatusCode::FORBIDDEN, Json(error)).into_response();
+            }
+            ApiKeyAuthResult::Disabled => {
+                let error = ErrorResponse::new(
+                    "forbidden",
+                    "API key has been disabled. Please contact the administrator.",
+                );
+                return (StatusCode::FORBIDDEN, Json(error)).into_response();
+            }
+            ApiKeyAuthResult::NotFound => {
+                // 继续到下面的通用 401
+            }
+        }
+    }
+
+    // 2. 不匹配
+    let error = ErrorResponse::authentication_error();
+    (StatusCode::UNAUTHORIZED, Json(error)).into_response()
+}
+
+/// CORS 中间件层
+///
+/// **安全说明**：当前配置允许所有来源（Any），这是为了支持公开 API 服务。
+/// 如果需要更严格的安全控制，请根据实际需求配置具体的允许来源、方法和头信息。
+///
+/// # 配置说明
+/// - `allow_origin(Any)`: 允许任何来源的请求
+/// - `allow_methods(Any)`: 允许任何 HTTP 方法
+/// - `allow_headers(Any)`: 允许任何请求头
+pub fn cors_layer() -> tower_http::cors::CorsLayer {
+    use tower_http::cors::{Any, CorsLayer};
+
+    CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any)
+}

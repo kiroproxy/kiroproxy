@@ -1,0 +1,236 @@
+//! converter 测试（自 tests.rs 拆分，纯代码搬移）
+#![cfg(test)]
+
+use super::super::model::map_model;
+#[allow(unused_imports)]
+use crate::anthropic::types::ContentBlock as _;
+#[allow(unused_imports)]
+use crate::kiro::model::requests::conversation::Message;
+
+#[test]
+fn test_map_model_sonnet() {
+    assert_eq!(map_model("claude-sonnet-4").unwrap(), "claude-sonnet-4");
+    assert_eq!(
+        map_model("claude-sonnet-4-20250514").unwrap(),
+        "claude-sonnet-4"
+    );
+    assert_eq!(
+        map_model("claude-sonnet-4-5-20250929").unwrap(),
+        "claude-sonnet-4.5"
+    );
+    // claude-3-5-sonnet 含日期中有 "4"，但不含 sonnet-4，应兜底到 4.5
+    assert_eq!(
+        map_model("claude-3-5-sonnet-20241022").unwrap(),
+        "claude-sonnet-4.5"
+    );
+}
+
+#[test]
+fn test_map_model_opus() {
+    assert!(
+        map_model("claude-opus-4-20250514")
+            .unwrap()
+            .contains("opus")
+    );
+}
+
+#[test]
+fn test_map_model_haiku() {
+    assert!(
+        map_model("claude-haiku-4-20250514")
+            .unwrap()
+            .contains("haiku")
+    );
+}
+
+#[test]
+fn test_map_model_haiku_5_5_aliases() {
+    // haiku 5.5 映射（上游 ID 与 sonnet/opus 5.5 同为点号格式）
+    assert_eq!(map_model("claude-haiku-5.5").unwrap(), "claude-haiku-5.5");
+    assert_eq!(map_model("claude-haiku-5-5").unwrap(), "claude-haiku-5.5");
+    assert_eq!(
+        map_model("claude-haiku-5.5-thinking").unwrap(),
+        "claude-haiku-5.5"
+    );
+    assert_eq!(
+        map_model("claude-haiku-5-5-20261007").unwrap(),
+        "claude-haiku-5.5"
+    );
+    assert_eq!(map_model("Claude Haiku 5.5").unwrap(), "claude-haiku-5.5");
+
+    // 点号变体（与 opus.5 / sonnet.5 惯例一致，回归：谓词改写曾丢失点号写法）
+    assert_eq!(map_model("claude-haiku.5.5").unwrap(), "claude-haiku-5.5");
+    assert_eq!(map_model("claude-haiku.5-5").unwrap(), "claude-haiku-5.5");
+
+    // 回归：4.x / 3.x haiku 不被 5.5 分支误命中
+    assert_eq!(map_model("claude-haiku-4-5").unwrap(), "claude-haiku-4.5");
+    assert_eq!(
+        map_model("claude-haiku-4-20250514").unwrap(),
+        "claude-haiku-4.5"
+    );
+    assert_eq!(
+        map_model("claude-3-5-haiku-20241022").unwrap(),
+        "claude-haiku-4.5"
+    );
+
+    // 回归：非 5.5 的 haiku-5.x 不被误命中（原谓词只判主版本前缀会命中）
+    assert_eq!(map_model("claude-haiku-5.0").unwrap(), "claude-haiku-4.5");
+    assert_eq!(map_model("claude-haiku-5.6").unwrap(), "claude-haiku-4.5");
+    assert_eq!(map_model("claude-haiku-50").unwrap(), "claude-haiku-4.5");
+}
+
+#[test]
+fn test_map_model_passthrough_unknown() {
+    // 开放透传：未命中内置规则的非空模型 ID 原样透传
+    assert_eq!(map_model("gpt-4").unwrap(), "gpt-4");
+    assert_eq!(
+        map_model("some-brand-new-model").unwrap(),
+        "some-brand-new-model"
+    );
+}
+
+#[test]
+fn test_map_model_passthrough_strips_thinking() {
+    // 透传时剥离 -thinking 标记（thinking 由 req.thinking 单独控制）
+    assert_eq!(map_model("gpt-4-thinking").unwrap(), "gpt-4");
+    assert_eq!(
+        map_model("brand-new-thinking-model").unwrap(),
+        "brand-new-model"
+    );
+}
+
+#[test]
+fn test_map_model_empty_rejected() {
+    // 空字符串仍拒绝
+    assert!(map_model("").is_none());
+    assert!(map_model("   ").is_none());
+    assert!(map_model("-thinking").is_none());
+}
+
+#[test]
+fn test_map_model_builtin_rules_unaffected() {
+    // 内置规则优先级不变
+    assert_eq!(map_model("claude-sonnet-4-5").unwrap(), "claude-sonnet-4.5");
+    assert_eq!(map_model("gpt-5.6-sol").unwrap(), "gpt-5.6-sol");
+    assert_eq!(map_model("glm-4.6").unwrap(), "glm-5");
+}
+
+#[test]
+fn test_map_model_gpt_5_6_variants() {
+    assert_eq!(map_model("gpt-5.6-sol").unwrap(), "gpt-5.6-sol");
+    assert_eq!(map_model("gpt-5.6-terra").unwrap(), "gpt-5.6-terra");
+    assert_eq!(map_model("gpt-5.6-luna").unwrap(), "gpt-5.6-luna");
+    assert_eq!(map_model("gpt-5.6").unwrap(), "gpt-5.6-sol");
+}
+
+#[test]
+fn test_map_model_kimi_k3() {
+    // kimi-k3（上游 2026-10-16 新增）：含 -thinking 后缀与空格别名均归一到 kimi-k3
+    assert_eq!(map_model("kimi-k3").unwrap(), "kimi-k3");
+    assert_eq!(map_model("kimi-k3-thinking").unwrap(), "kimi-k3");
+    assert_eq!(map_model("Kimi K3").unwrap(), "kimi-k3");
+}
+
+#[test]
+fn test_map_model_thinking_suffix_sonnet() {
+    // thinking 后缀不应影响 sonnet 模型映射
+    let result = map_model("claude-sonnet-4-5-20250929-thinking");
+    assert_eq!(result, Some("claude-sonnet-4.5".to_string()));
+}
+
+#[test]
+fn test_map_model_opus_5_aliases() {
+    assert_eq!(map_model("claude-opus-5").unwrap(), "claude-opus-5");
+    assert_eq!(
+        map_model("claude-opus-5-thinking").unwrap(),
+        "claude-opus-5"
+    );
+    assert_eq!(map_model("Claude Opus 5").unwrap(), "claude-opus-5");
+    assert_eq!(
+        map_model("claude-opus-5-20260101").unwrap(),
+        "claude-opus-5"
+    );
+    assert_eq!(
+        map_model("claude-opus-5-thinking-20260101").unwrap(),
+        "claude-opus-5"
+    );
+    assert_eq!(map_model("claude-Opus-5").unwrap(), "claude-opus-5");
+
+    // 回归：现有 opus-4.7/4.8 不被 opus-5 分支误命中
+    assert_eq!(
+        map_model("claude-opus-4-7-20251115").unwrap(),
+        "claude-opus-4.7"
+    );
+    assert_eq!(map_model("claude-opus-4.8").unwrap(), "claude-opus-4.8");
+    assert_eq!(map_model("claude-opus-4.6").unwrap(), "claude-opus-4.6");
+    assert_eq!(map_model("claude-opus-4.5").unwrap(), "claude-opus-4.5");
+    assert_eq!(map_model("claude-sonnet-5").unwrap(), "claude-sonnet-5");
+}
+
+#[test]
+fn test_map_model_5_5_aliases() {
+    // 5.5 代际映射（档位沿用 5 代）
+    assert_eq!(map_model("claude-opus-5.5").unwrap(), "claude-opus-5.5");
+    assert_eq!(map_model("claude-opus-5-5").unwrap(), "claude-opus-5.5");
+    assert_eq!(
+        map_model("claude-opus-5.5-thinking").unwrap(),
+        "claude-opus-5.5"
+    );
+    assert_eq!(
+        map_model("claude-opus-5.5-20260301").unwrap(),
+        "claude-opus-5.5"
+    );
+    assert_eq!(map_model("Claude Opus 5.5").unwrap(), "claude-opus-5.5");
+    assert_eq!(map_model("claude-sonnet-5.5").unwrap(), "claude-sonnet-5.5");
+    assert_eq!(map_model("claude-sonnet-5-5").unwrap(), "claude-sonnet-5.5");
+    assert_eq!(
+        map_model("claude-sonnet-5.5-thinking").unwrap(),
+        "claude-sonnet-5.5"
+    );
+
+    // 回归：现有 opus-5 / sonnet-5 不被 5.5 分支误命中
+    assert_eq!(map_model("claude-opus-5").unwrap(), "claude-opus-5");
+    assert_eq!(map_model("claude-sonnet-5").unwrap(), "claude-sonnet-5");
+}
+
+#[test]
+fn test_map_model_thinking_suffix_opus_4_5() {
+    // thinking 后缀不应影响 opus 4.5 模型映射
+    let result = map_model("claude-opus-4-5-20251101-thinking");
+    assert_eq!(result, Some("claude-opus-4.5".to_string()));
+}
+
+#[test]
+fn test_map_model_thinking_suffix_opus_4_6() {
+    // thinking 后缀不应影响 opus 4.6 模型映射
+    let result = map_model("claude-opus-4-6-thinking");
+    assert_eq!(result, Some("claude-opus-4.6".to_string()));
+}
+
+#[test]
+fn test_map_model_thinking_suffix_haiku() {
+    // thinking 后缀不应影响 haiku 模型映射
+    let result = map_model("claude-haiku-4-5-20251001-thinking");
+    assert_eq!(result, Some("claude-haiku-4.5".to_string()));
+}
+
+#[test]
+fn test_map_model_fable_routes_to_kiro_fable() {
+    assert_eq!(
+        map_model("claude-fable-5"),
+        Some("claude-fable-5".to_string())
+    );
+    assert_eq!(
+        map_model("claude-fable-5-thinking"),
+        Some("claude-fable-5".to_string())
+    );
+}
+
+#[test]
+fn test_map_model_opus_4_6_unchanged() {
+    // 回归：opus-4-6 默认走 claude-opus-4.6
+    assert_eq!(
+        map_model("claude-opus-4-6"),
+        Some("claude-opus-4.6".to_string())
+    );
+}
