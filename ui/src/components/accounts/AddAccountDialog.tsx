@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
+import { useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -23,7 +24,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { ipc } from "@/lib/ipc"
-import { useCreateAccount, useImportKam } from "@/lib/queries"
+import { queryKeys, useCreateAccount, useImportKam } from "@/lib/queries"
 import { strings } from "@/lib/strings"
 import type { AddCredentialRequest, KamPreview, KiroIdePreview } from "@/lib/types"
 
@@ -280,6 +281,7 @@ function Info({ label, value }: { label: string; value: string }) {
 }
 
 function KiroIdeForm({ onDone }: { onDone: () => void }) {
+  const queryClient = useQueryClient()
   const [preview, setPreview] = useState<KiroIdePreview | null | undefined>(undefined)
   const [busy, setBusy] = useState(false)
 
@@ -310,6 +312,7 @@ function KiroIdeForm({ onDone }: { onDone: () => void }) {
         .filter(Boolean)
         .join("，")
       toast.success(`导入 ${result.imported} 条${extra ? `，${extra}` : ""}`)
+      await queryClient.invalidateQueries({ queryKey: queryKeys.accounts })
       onDone()
     } catch (error) {
       toast.error((error as { message?: string }).message ?? strings.errors.actionFailed)

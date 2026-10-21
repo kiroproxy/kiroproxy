@@ -3,6 +3,16 @@ import { listen } from "@tauri-apps/api/event"
 import { save } from "@tauri-apps/plugin-dialog"
 import { DownloadIcon, PauseIcon, PlayIcon, Trash2Icon } from "lucide-react"
 import { toast } from "sonner"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -28,6 +38,7 @@ export function LogsPage() {
   const [level, setLevel] = useState<(typeof LEVELS)[number]>("全部")
   const [search, setSearch] = useState("")
   const [paused, setPaused] = useState(false)
+  const [clearOpen, setClearOpen] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const throttle = useThrottleLogs()
   const failure = useFailureLogs()
@@ -89,11 +100,13 @@ export function LogsPage() {
     }
   }
 
-  const handleClear = async () => {
-    if (!window.confirm(strings.logs.clearConfirm)) return
+  const handleClear = () => setClearOpen(true)
+
+  const confirmClear = async () => {
     try {
       await ipc.clearLogs()
       setEntries([])
+      setClearOpen(false)
     } catch (error) {
       toast.error((error as { message?: string }).message ?? strings.errors.actionFailed)
     }
@@ -237,6 +250,21 @@ export function LogsPage() {
           </div>
         </TabsContent>
       </Tabs>
+
+      <AlertDialog open={clearOpen} onOpenChange={setClearOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{strings.logs.clear}</AlertDialogTitle>
+            <AlertDialogDescription>{strings.logs.clearConfirm}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{strings.common.cancel}</AlertDialogCancel>
+            <AlertDialogAction variant="danger" onClick={() => void confirmClear()}>
+              {strings.common.confirm}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   )
 }

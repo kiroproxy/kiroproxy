@@ -31,7 +31,7 @@ function CodeBlock({ code }: { code: string }) {
 
   return (
     <div className="relative">
-      <pre className="overflow-x-auto rounded-[12px] bg-subtle p-3 font-mono text-[11.5px] leading-5">
+      <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-[12px] bg-subtle p-3 font-mono text-[11.5px] leading-5">
         {code}
       </pre>
       <Button
@@ -155,7 +155,7 @@ print(resp.choices[0].message.content)`
         </CardContent>
       </Card>
 
-      <Tabs defaultValue="claude" className="gap-3">
+      <Tabs defaultValue="claude" className="flex flex-col gap-3">
         <TabsList>
           <TabsTrigger value="claude">{strings.connect.claudeCode}</TabsTrigger>
           <TabsTrigger value="codex">{strings.connect.codex}</TabsTrigger>
@@ -163,21 +163,21 @@ print(resp.choices[0].message.content)`
           <TabsTrigger value="ccswitch">{strings.connect.ccSwitch}</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="claude" className="flex flex-col gap-3">
+        <TabsContent value="claude" className="flex w-full flex-col gap-3">
           <Panel title="环境变量" code={claudeEnv} />
           <Panel title={strings.connect.settingsJson} code={claudeSettings} />
         </TabsContent>
 
-        <TabsContent value="codex" className="flex flex-col gap-3">
+        <TabsContent value="codex" className="flex w-full flex-col gap-3">
           <Panel title={strings.connect.codexConfig} code={codexConfig} />
           <Panel title={strings.connect.codexEnv} code={codexEnv} />
         </TabsContent>
 
-        <TabsContent value="openai" className="flex flex-col gap-3">
+        <TabsContent value="openai" className="flex w-full flex-col gap-3">
           <Panel title={strings.connect.pythonExample} code={openaiPython} />
         </TabsContent>
 
-        <TabsContent value="ccswitch" className="flex flex-col gap-3">
+        <TabsContent value="ccswitch" className="flex w-full flex-col gap-3">
           <Card>
             <CardContent className="flex flex-col gap-2 pt-1 text-[12.5px]">
               <p className="text-muted-foreground">{strings.connect.ccSwitchHint}</p>
