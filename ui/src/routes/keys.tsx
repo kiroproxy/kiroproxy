@@ -259,7 +259,7 @@ export function KeysPage() {
   return (
     <section aria-label={strings.keys.title} className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-[12px] text-muted-foreground">{strings.keys.subtitle}</p>
+        <span className="text-[12px] text-muted-foreground">共 {items.length} 个密钥</span>
         <Button
           onClick={() => {
             setEditing(null)

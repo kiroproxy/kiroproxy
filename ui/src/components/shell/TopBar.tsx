@@ -140,7 +140,7 @@ export function TopBar({ status }: TopBarProps) {
     <header
       data-tauri-drag-region
       className={cn(
-        "flex h-12 shrink-0 items-center gap-3 border-b border-border bg-panel pr-3.5",
+        "relative flex h-12 shrink-0 items-center gap-3 border-b border-border bg-panel pr-3.5",
         isMac ? "pl-[78px]" : "pl-3.5",
       )}
     >
@@ -167,23 +167,25 @@ export function TopBar({ status }: TopBarProps) {
         )}
       </div>
 
-      <div className="flex min-w-0 flex-1 justify-center">
-        {settingsMode ? (
-          <SegmentedNav
-            items={settingsNav}
-            value={activeSection}
-            onChange={(section) => navigate(`/settings/${section}`)}
-            ariaLabel={strings.shell.settingsNavLabel}
-            className="max-w-full overflow-x-auto"
-          />
-        ) : (
-          <SegmentedNav
-            items={mainNav}
-            value={activeMain}
-            onChange={(target) => navigate(target)}
-            ariaLabel={strings.shell.mainNavLabel}
-          />
-        )}
+      <div className="flex min-w-0 flex-1 items-center justify-center">
+        <div className="absolute left-1/2 -translate-x-1/2">
+          {settingsMode ? (
+            <SegmentedNav
+              items={settingsNav}
+              value={activeSection}
+              onChange={(section) => navigate(`/settings/${section}`)}
+              ariaLabel={strings.shell.settingsNavLabel}
+              className="max-w-[calc(100vw-360px)] overflow-x-auto"
+            />
+          ) : (
+            <SegmentedNav
+              items={mainNav}
+              value={activeMain}
+              onChange={(target) => navigate(target)}
+              ariaLabel={strings.shell.mainNavLabel}
+            />
+          )}
+        </div>
       </div>
 
       <div className="flex shrink-0 items-center gap-1">

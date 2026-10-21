@@ -11,7 +11,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { SegmentedNav } from "@/components/shell/TopBar"
@@ -260,7 +259,11 @@ export function SettingsPage() {
               }
             >
               <SelectTrigger className="w-[140px]">
-                <SelectValue />
+                <span>
+                  {data.loadBalancingMode === "priority"
+                    ? strings.settings.loadBalancingPriority
+                    : strings.settings.loadBalancingBalanced}
+                </span>
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="priority">{strings.settings.loadBalancingPriority}</SelectItem>

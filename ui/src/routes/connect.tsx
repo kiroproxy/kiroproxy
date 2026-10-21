@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react"
-import { CheckIcon, CopyIcon } from "lucide-react"
+import { ArrowLeftIcon, CheckIcon, CopyIcon } from "lucide-react"
+import { useNavigate } from "react-router-dom"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -8,7 +9,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ipc } from "@/lib/ipc"
@@ -57,6 +57,7 @@ function Panel({ title, code }: { title: string; code: string }) {
 }
 
 export function ConnectPage() {
+  const navigate = useNavigate()
   const server = useServerStatus()
   const keys = useApiKeys()
   const [keyId, setKeyId] = useState<string>("")
@@ -110,6 +111,16 @@ print(resp.choices[0].message.content)`
 
   return (
     <section aria-label={strings.connect.title} className="mx-auto flex w-full max-w-[860px] flex-col gap-3">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="w-fit px-1 text-muted-foreground"
+        onClick={() => navigate(-1)}
+      >
+        <ArrowLeftIcon />
+        {strings.common.back}
+      </Button>
+
       <Card>
         <CardContent className="flex flex-wrap items-center gap-3 pt-1">
           <div className="flex flex-col gap-0.5">
@@ -125,7 +136,9 @@ print(resp.choices[0].message.content)`
               }}
             >
               <SelectTrigger className="w-[200px]">
-                <SelectValue placeholder={strings.connect.selectKey} />
+                <span className="truncate">
+                  {selected?.name ?? strings.connect.selectKey}
+                </span>
               </SelectTrigger>
               <SelectContent>
                 {(keys.data ?? []).map((key) => (

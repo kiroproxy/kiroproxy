@@ -7,7 +7,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useAccountModels, useAccounts, useModels } from "@/lib/queries"
@@ -73,6 +72,7 @@ export function ModelsPage() {
   const [search, setSearch] = useState("")
   const [probeId, setProbeId] = useState<number | null>(null)
   const probe = useAccountModels(probeId ?? 0, probeId !== null)
+  const probeAccount = accounts.data?.credentials.find((account) => account.id === probeId)
 
   const groups = useMemo(() => {
     const term = search.trim().toLowerCase()
@@ -138,7 +138,11 @@ export function ModelsPage() {
               onValueChange={(value) => setProbeId(Number(value) || null)}
             >
               <SelectTrigger className="max-w-[320px]">
-                <SelectValue placeholder={strings.models.selectAccount} />
+                <span className="truncate">
+                  {probeAccount
+                    ? `#${probeAccount.id} ${probeAccount.nickname || probeAccount.email || ""}`
+                    : strings.models.selectAccount}
+                </span>
               </SelectTrigger>
               <SelectContent>
                 {(accounts.data?.credentials ?? []).map((account) => (
