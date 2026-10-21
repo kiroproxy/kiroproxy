@@ -1,3 +1,5 @@
+import type { MouseEvent } from "react"
+import { getCurrentWindow } from "@tauri-apps/api/window"
 import { CheckIcon, MoonIcon, SettingsIcon, SunIcon, SunMoonIcon } from "lucide-react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { Button } from "@/components/ui/button"
@@ -136,9 +138,26 @@ export function TopBar({ status }: TopBarProps) {
   )?.value
   const activeSection = pathname.split("/")[2] || "general"
 
+  const handleDragStart = (event: MouseEvent<HTMLElement>) => {
+    if (event.button !== 0) return
+    const target = event.target
+    if (
+      target instanceof HTMLElement &&
+      target.closest("button, a, input, textarea, select, [role='tab'], [data-no-drag]")
+    ) {
+      return
+    }
+    try {
+      void getCurrentWindow().startDragging().catch(() => undefined)
+    } catch {
+      // 浏览器预览环境没有 Tauri 窗口 API。
+    }
+  }
+
   return (
     <header
       data-tauri-drag-region
+      onMouseDown={handleDragStart}
       className={cn(
         "relative flex h-12 shrink-0 items-center gap-3 border-b border-border bg-panel pr-3.5",
         isMac ? "pl-[78px]" : "pl-3.5",
