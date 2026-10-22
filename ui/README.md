@@ -1,32 +1,13 @@
-# React + TypeScript + Vite
+# KiroProxy UI
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+KiroProxy 桌面应用的前端：React 19 + TypeScript + Vite + Tailwind v4 + shadcn/ui（Base UI）。
+所有数据通过 Tauri `invoke` 调 Rust 层，不直接访问网络。
 
-Currently, two official plugins are available:
-
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+pnpm install
+pnpm dev        # 浏览器预览（无 Tauri IPC，仅布局/组件）
+pnpm test
+pnpm build
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+组件规范与设计 token 见仓库根目录的 `docs/superpowers/specs/`（私有文档仓库）。

@@ -6,3 +6,20 @@
 /.zcode
 *.log
 .DS_Store
+
+# 凭据 / 本地数据（应用数据在 ~/Library/Application Support，不应进仓库）
+.env
+.env.*
+*.pem
+*.key
+!ui/public/*.svg
+credentials*.json
+api_keys*.json
+api_key_usage.json
+kiro_*.json
+/config.json
+kiro-body-dump/
+/logs/
+*.dmg
+.idea/
+.vscode/

@@ -4,13 +4,14 @@ KiroProxy 是一个 Tauri 2 桌面客户端，把 [kiro2cc-proxy](https://github
 
 ## 功能
 
-- 账号管理：KAM 导入、从本机 Kiro IDE 登录缓存导入、手动添加、启停、优先级、余额、模型探测、批量验活、账号详情
+- 账号管理：浏览器登录（Google / GitHub）、KAM 导入、从本机 Kiro IDE 登录缓存导入、手动添加、启停、优先级、余额、模型探测、批量验活、账号详情
 - API Key：创建/编辑/删除、USD / Credits 额度、懒激活有效期、绑定账号、明文复制、用量重置
 - 用量：今日 / 7 天 / 30 天 / 自定义范围、按日汇总、调用记录
 - 日志：实时运行日志、限流日志、失败日志、等级/搜索筛选、下载
 - 模型：上游模型列表与按账号探测
 - 设置：监听地址/端口、代理、负载均衡、RPM、功能开关、数据目录、外观、关于
 - 客户端接入：Claude Code、Codex CLI、OpenAI SDK、cc-switch 片段生成
+- 自动更新：从 GitHub Releases 检查并后台下载新版本，确认后才会替换应用并重启
 
 ## 开发
 
@@ -31,6 +32,23 @@ macOS 产物：
 
 - `target/release/bundle/macos/KiroProxy.app`
 - `target/release/bundle/dmg/KiroProxy_0.1.0_aarch64.dmg`
+
+## 发布与自动更新
+
+应用通过 `tauri-plugin-updater` 从 GitHub Releases 更新：
+
+- 更新源：`https://github.com/kiroproxy/kiroproxy/releases/latest/download/latest.json`
+- 发现新版本后自动在后台下载并显示进度，**只有点击「重启并更新」才会替换应用**；
+- 从 DMG 或 Gatekeeper 隔离路径运行时无法原地替换，界面会提示把应用拖入「应用程序」；
+- 发布构建需要签名密钥（minisign）：`TAURI_SIGNING_PRIVATE_KEY` 与可选的
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`，私钥丢失后已安装的用户将无法再收到自动更新。
+
+发版流程：更新 `src-tauri/tauri.conf.json` 与 `Cargo.toml` 中的版本号，推送 `v*` 标签，
+GitHub Actions（`.github/workflows/publish.yml`）会构建 macOS aarch64 安装包、
+签名并创建**草稿** Release（含 `latest.json`），检查无误后手动发布即可。
+
+> 注意：tauri-action 生成的 `latest.json` 使用 GitHub API 资产地址，未认证请求有每小时
+> 60 次的限制；用户量大时可以手改成 `releases/download/<tag>/<file>` 直链。
 
 ## 验证
 
@@ -55,6 +73,11 @@ pnpm --dir ui build
 export ANTHROPIC_BASE_URL="http://127.0.0.1:5678"
 export ANTHROPIC_API_KEY="在「密钥」页复制的 Key"
 ```
+
+## 免责声明
+
+本项目是非官方工具，与 Amazon、AWS、Kiro、Anthropic、OpenAI 没有任何隶属或背书关系。
+使用前请自行确认符合相关服务条款与当地法律；因使用本工具产生的账号风险与本项目无关。
 
 ## 许可与署名
 
