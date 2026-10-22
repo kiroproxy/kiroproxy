@@ -39,7 +39,7 @@ publish_public() {
     git checkout -q "$BRANCH"
     git-filter-repo --force --path docs --invert-paths >/dev/null
     git remote add public-target "$(git -C "$ROOT" remote get-url "$PUBLIC_REMOTE")"
-    git push -q --force public-target "HEAD:$BRANCH"
+    git push -q --force public-target "HEAD:$BRANCH" --tags
     echo "    已推送 $(git rev-parse --short HEAD) → $PUBLIC_REMOTE/$BRANCH"
   )
   rm -rf "$tmp"
@@ -72,8 +72,8 @@ require_remote "$DOCS_REMOTE"
 require_filter_repo
 
 echo "==> 推送聚合仓库 $KOPS_REMOTE"
-git push -q "$KOPS_REMOTE" "$BRANCH"
-echo "    已推送 → $KOPS_REMOTE/$BRANCH"
+git push -q "$KOPS_REMOTE" "$BRANCH" --tags
+echo "    已推送（含标签） → $KOPS_REMOTE/$BRANCH"
 
 publish_public
 publish_docs
