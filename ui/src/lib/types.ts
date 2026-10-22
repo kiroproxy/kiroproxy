@@ -376,7 +376,6 @@ export interface OauthStatus {
   phase: OauthPhase
   /** "Google" / "Github" */
   provider?: string | null
-  userCode?: string | null
   verificationUrl?: string | null
   message?: string | null
   credentialId?: number | null

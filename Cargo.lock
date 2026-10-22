@@ -2275,15 +2275,18 @@ dependencies = [
 
 [[package]]
 name = "kiroproxy-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
  "chrono",
+ "getrandom 0.4.3",
  "kiro-core",
  "parking_lot",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

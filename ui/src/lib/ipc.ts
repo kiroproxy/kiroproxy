@@ -105,8 +105,7 @@ export const ipc = {
   scanKiroIde: () => call<KiroIdePreview | null>("scan_kiro_ide"),
   importKiroIde: () => call<ImportOutcome>("import_kiro_ide"),
   getOauthStatus: () => call<OauthStatus>("get_oauth_status"),
-  startBrowserLogin: (provider: "google" | "github") =>
-    call<OauthStatus>("start_browser_login", { provider }),
+  startBrowserLogin: () => call<OauthStatus>("start_browser_login"),
   cancelBrowserLogin: () => call<OauthStatus>("cancel_browser_login"),
   reopenLoginPage: () => call<void>("reopen_login_page"),
 

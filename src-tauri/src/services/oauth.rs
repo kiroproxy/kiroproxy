@@ -1,51 +1,59 @@
 // Copyright (c) 2026 pigcursor. Licensed under MIT.
 
-//! 浏览器登录（Kiro 官方 CLI 同款的 device code flow）。
+//! 浏览器登录（与 Kiro IDE / kiro-cli 相同的门户授权流程）。
 //!
 //! 流程：
-//! 1. 向 `https://prod.{region}.auth.desktop.kiro.dev/oauth/device/authorization` 申请一次性授权链接；
-//! 2. 打开系统浏览器，用户在网页上用 Google / GitHub 完成授权；
-//! 3. 应用按服务端给的间隔轮询 `/oauth/device/poll`，拿到 accessToken / refreshToken / profileArn；
+//! 1. 在本机 10 个被 Kiro 授权服务白名单允许的回调端口上启动一次性本地 HTTP 服务；
+//! 2. 打开 `https://app.kiro.dev/signin`（Kiro 自己的登录页），由网页让用户选择
+//!    Google / GitHub 账号并完成登录；
+//! 3. 网页回跳到 `http://localhost:<port>/oauth/callback?login_option=…&code=…&state=…`，
+//!    应用校验 state 后用 code + PKCE verifier 换取 accessToken / refreshToken / profileArn；
 //! 4. 以禁用状态创建账号 → 余额验活 → 启用（与 Kiro IDE / KAM 导入一致）。
 //!
-//! 这条流程不需要 redirect_uri、PKCE 或 client secret，也不占用本地端口（Kiro 的授权码
-//! 流程有 redirect_uri 白名单，第三方应用用不了），因此是桌面端最稳妥的方式。
-//! 该接口属于 Kiro 未公开契约，服务端变更或 CloudFront 按 IP 拦截时会在错误信息里说明原因。
+//! 注意：Kiro 的授权服务只接受预注册的回调地址——`kiro://` 自定义协议或下列固定 loopback
+//! 端口，所以端口不能随便选；token 交换时 `redirect_uri` 必须与回调路径和 `login_option`
+//! 完全一致。该接口属于 Kiro 未公开契约，服务端变更或 CloudFront 按 IP 拦截时会在错误信息里说明。
 
 use crate::error::IpcError;
 use crate::state::AppState;
+use base64::Engine as _;
 use kiro_core::admin::types::AddCredentialRequest;
 use kiro_core::http_client::{ProxyConfig, build_client};
 use kiro_core::kam::refresh_token_hash;
 use kiro_core::model::config::Config;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 /// 登录状态事件：payload 为 [`OauthStatus`]
 pub const OAUTH_STATUS_EVENT: &str = "oauth://status";
 
-const DEVICE_PATH: &str = "/oauth/device/authorization";
-const POLL_PATH: &str = "/oauth/device/poll";
-/// `kiro-cli` 是 kiro-cli 官方使用的客户端标识（大小写两种写法兼容）
-const CLIENT_IDS: [&str; 2] = ["kiro-cli", "Kiro-CLI"];
+/// Kiro 自己的登录页（网页里选择 Google / GitHub 并选择账号）
+const PORTAL_URL: &str = "https://app.kiro.dev/signin";
+const TOKEN_PATH: &str = "/oauth/token";
+/// Kiro 授权服务只接受这些预注册的 loopback 回调端口
+const CALLBACK_PORTS: [u16; 10] = [
+    3128, 4649, 6588, 8008, 9091, 49153, 50153, 51153, 52153, 53153,
+];
+const CALLBACK_PATHS: [&str; 2] = ["/oauth/callback", "/signin/callback"];
+/// 用户在浏览器里完成登录的最长等待时间
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const HTTP_TIMEOUT_SECS: u64 = 20;
-/// 服务端没给过期时间时的兜底（10 分钟）
-const FALLBACK_TTL: Duration = Duration::from_secs(10 * 60);
-/// slow_down 时的间隔增量
-const SLOW_DOWN_STEP: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum OauthPhase {
     Idle,
-    /// 已打开浏览器，等待用户完成授权
+    /// 已打开浏览器登录页，等待网页回调
     Waiting,
-    /// 已拿到 token，正在创建并验证账号
+    /// 已收到回调，正在换取 token 并验证账号
     Verifying,
     Success,
     Failed,
@@ -56,10 +64,9 @@ pub enum OauthPhase {
 #[serde(rename_all = "camelCase")]
 pub struct OauthStatus {
     pub phase: OauthPhase,
-    /// "Google" / "Github"
+    /// "Google" / "Github"，回调后才能确定
     pub provider: Option<String>,
-    /// 网页上显示的配对码（有就展示，方便用户核对）
-    pub user_code: Option<String>,
+    /// 打开的 Kiro 登录页地址
     pub verification_url: Option<String>,
     pub message: Option<String>,
     pub credential_id: Option<u64>,
@@ -70,7 +77,6 @@ impl OauthStatus {
         Self {
             phase: OauthPhase::Idle,
             provider: None,
-            user_code: None,
             verification_url: None,
             message: None,
             credential_id: None,
@@ -113,14 +119,13 @@ fn end_session(state: &OauthState, cancel: &Arc<AtomicBool>) {
     }
 }
 
-/// 启动浏览器登录：申请授权链接并打开浏览器，然后后台轮询结果。
-pub async fn start(app: AppHandle, provider: String) -> Result<OauthStatus, IpcError> {
-    let provider = normalize_provider(&provider)?;
-    let (config, core) = {
+/// 打开 Kiro 登录页并等待网页回调。
+///
+/// 返回「等待授权」状态；后续进展通过 `oauth://status` 事件推送。
+pub async fn start(app: AppHandle) -> Result<OauthStatus, IpcError> {
+    let config = {
         let state = app.state::<AppState>();
-        let core = state.core()?;
-        let config = core.config.read().clone();
-        (config, core)
+        state.core()?.config.read().clone()
     };
     {
         let state = app.state::<OauthState>();
@@ -131,6 +136,12 @@ pub async fn start(app: AppHandle, provider: String) -> Result<OauthStatus, IpcE
             ));
         }
     }
+
+    let (listener, port) = bind_callback_listener()?;
+    let state_token = random_token(24)?;
+    let verifier = random_token(32)?;
+    let challenge = code_challenge(&verifier);
+    let portal = portal_url(&state_token, &challenge, port)?;
 
     let cancel = Arc::new(AtomicBool::new(false));
     app.state::<OauthState>()
@@ -144,81 +155,42 @@ pub async fn start(app: AppHandle, provider: String) -> Result<OauthStatus, IpcE
         config.tls_backend,
     )
     .map_err(|e| IpcError::new("invalid_proxy", format!("代理地址无效：{e}")))?;
-    let base = auth_base(&config);
 
-    let authorization = match authorize(&client, &base, &provider).await {
-        Ok(value) => value,
-        Err(error) => {
-            end_session(&app.state::<OauthState>(), &cancel);
-            publish(&app, failed_status(Some(provider.clone()), &error));
-            return Err(error);
-        }
-    };
-
-    if cancel.load(Ordering::SeqCst) {
-        end_session(&app.state::<OauthState>(), &cancel);
-        let status = cancelled_status(Some(provider.clone()));
-        publish(&app, status.clone());
-        return Ok(status);
-    }
-
-    let url = authorization
-        .verification_uri_complete
-        .clone()
-        .or_else(|| authorization.verification_uri.clone())
-        .ok_or_else(|| IpcError::new("login_failed", "授权服务没有返回登录链接，请稍后重试"))?;
-    if let Err(e) = app.opener().open_url(url.clone(), None::<&str>) {
+    if let Err(e) = app.opener().open_url(portal.clone(), None::<&str>) {
         end_session(&app.state::<OauthState>(), &cancel);
         let error = IpcError::new("login_failed", format!("无法打开浏览器：{e}"));
-        publish(&app, failed_status(Some(provider.clone()), &error));
+        publish(&app, failed_status(None, &error));
         return Err(error);
     }
 
-    let status = OauthStatus {
+    let waiting = OauthStatus {
         phase: OauthPhase::Waiting,
-        provider: Some(provider.clone()),
-        user_code: authorization.user_code.clone(),
-        verification_url: Some(url),
-        message: None,
+        provider: None,
+        verification_url: Some(portal.to_string()),
+        message: Some("请在浏览器中选择 Google 或 GitHub 并完成登录".to_string()),
         credential_id: None,
     };
-    publish(&app, status.clone());
+    publish(&app, waiting.clone());
 
-    let poll_client = client.clone();
-    let poll_app = app.clone();
-    let device_code = authorization.device_code.clone();
-    let interval = authorization.interval();
-    let ttl = authorization.ttl();
+    let base = format!(
+        "https://prod.{}.auth.desktop.kiro.dev",
+        config.effective_auth_region()
+    );
+    let task_app = app.clone();
     tauri::async_runtime::spawn(async move {
-        poll_loop(
-            poll_app.clone(),
-            poll_client,
-            base,
-            device_code,
-            provider,
-            interval,
-            ttl,
-            cancel,
-            core,
-        )
-        .await;
+        let outcome = wait_for_callback(listener, &state_token, &cancel).await;
+        let status = match outcome {
+            Ok(callback) => {
+                complete_login(task_app.clone(), &client, &base, &callback, &verifier, port).await
+            }
+            Err(WaitError::Cancelled) => cancelled_status(None),
+            Err(WaitError::Failed(error)) => failed_status(None, &error),
+        };
+        end_session(&task_app.state::<OauthState>(), &cancel);
+        publish(&task_app, status);
     });
 
-    Ok(status)
-}
-
-/// 重新打开当前登录的授权页（用户误关浏览器时用）；只打开自己申请到的链接
-pub fn reopen(app: &AppHandle) -> Result<(), IpcError> {
-    let url = app
-        .state::<OauthState>()
-        .status
-        .lock()
-        .verification_url
-        .clone()
-        .ok_or_else(|| IpcError::new("not_found", "没有正在进行的登录"))?;
-    app.opener()
-        .open_url(url, None::<&str>)
-        .map_err(IpcError::internal)
+    Ok(waiting)
 }
 
 /// 取消当前的浏览器登录
@@ -233,212 +205,254 @@ pub fn cancel(app: &AppHandle) -> OauthStatus {
     status
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn poll_loop(
-    app: AppHandle,
-    client: reqwest::Client,
-    base: String,
-    device_code: String,
-    provider: String,
-    mut interval: Duration,
-    ttl: Duration,
-    cancel: Arc<AtomicBool>,
-    core: Arc<crate::state::Core>,
-) {
-    let state = app.state::<OauthState>();
-    let deadline = Instant::now() + ttl;
+/// 重新打开当前登录的 Kiro 登录页（用户误关浏览器时用）；只打开自己生成的链接
+pub fn reopen(app: &AppHandle) -> Result<(), IpcError> {
+    let url = app
+        .state::<OauthState>()
+        .status
+        .lock()
+        .verification_url
+        .clone()
+        .ok_or_else(|| IpcError::new("not_found", "没有正在进行的登录"))?;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(IpcError::internal)
+}
 
+enum WaitError {
+    Cancelled,
+    Failed(IpcError),
+}
+
+#[derive(Debug)]
+struct Callback {
+    code: String,
+    login_option: String,
+    path: String,
+}
+
+async fn wait_for_callback(
+    listener: TcpListener,
+    expected_state: &str,
+    cancel: &Arc<AtomicBool>,
+) -> Result<Callback, WaitError> {
+    let deadline = Instant::now() + LOGIN_TIMEOUT;
     loop {
         if cancel.load(Ordering::SeqCst) {
-            end_session(&state, &cancel);
-            publish(&app, cancelled_status(Some(provider)));
-            return;
+            return Err(WaitError::Cancelled);
         }
         if Instant::now() >= deadline {
-            end_session(&state, &cancel);
-            publish(
-                &app,
-                failed_status(
-                    Some(provider),
-                    &IpcError::new("login_expired", "授权已过期，请重新发起登录"),
-                ),
-            );
-            return;
+            return Err(WaitError::Failed(IpcError::new(
+                "login_expired",
+                "等待浏览器登录超时，请重新发起登录",
+            )));
         }
-        tokio::time::sleep(interval).await;
+        let accepted = tokio::time::timeout(Duration::from_millis(300), listener.accept()).await;
+        let (mut socket, _) = match accepted {
+            Err(_) => continue,
+            Ok(Err(error)) => {
+                return Err(WaitError::Failed(IpcError::new(
+                    "login_failed",
+                    format!("本地回调服务异常：{error}"),
+                )));
+            }
+            Ok(Ok(value)) => value,
+        };
 
-        match poll_once(&client, &base, &device_code).await {
-            Ok(PollOutcome::Pending) => {}
-            Ok(PollOutcome::SlowDown) => interval += SLOW_DOWN_STEP,
-            Ok(PollOutcome::Authorized(tokens)) => {
-                end_session(&state, &cancel);
-                publish(
-                    &app,
-                    OauthStatus {
-                        phase: OauthPhase::Verifying,
-                        provider: Some(provider.clone()),
-                        user_code: None,
-                        verification_url: state.status.lock().verification_url.clone(),
-                        message: Some("授权成功，正在验证账号…".to_string()),
-                        credential_id: None,
-                    },
-                );
-                let result = create_account(&core, &provider, tokens).await;
-                let status = match result {
-                    Ok((credential_id, verified)) => OauthStatus {
-                        phase: OauthPhase::Success,
-                        provider: Some(provider),
-                        user_code: None,
-                        verification_url: None,
-                        message: Some(if verified {
-                            "账号已添加并启用".to_string()
-                        } else {
-                            "账号已添加，但验活失败，暂时保持禁用".to_string()
-                        }),
-                        credential_id: Some(credential_id),
-                    },
-                    Err(error) => failed_status(Some(provider), &error),
-                };
-                publish(&app, status);
-                return;
+        let mut buffer = vec![0u8; 8192];
+        let read = tokio::time::timeout(Duration::from_secs(3), socket.read(&mut buffer)).await;
+        let Ok(Ok(n)) = read else {
+            let _ = respond(&mut socket, 400, "请求读取失败").await;
+            continue;
+        };
+        let request = String::from_utf8_lossy(&buffer[..n]);
+        let target = request
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .unwrap_or("/");
+
+        match parse_callback(target, expected_state) {
+            Ok(Some(callback)) => {
+                let _ = respond(&mut socket, 200, SUCCESS_PAGE).await;
+                return Ok(callback);
+            }
+            Ok(None) => {
+                // 非回调路径（favicon 等）：回 404 继续等待
+                let _ = respond(&mut socket, 404, "not found").await;
             }
             Err(error) => {
-                end_session(&state, &cancel);
-                publish(&app, failed_status(Some(provider), &error));
-                return;
+                let _ = respond(&mut socket, 400, &error.message).await;
+                return Err(WaitError::Failed(error));
             }
         }
     }
 }
 
-enum PollOutcome {
-    Pending,
-    SlowDown,
-    Authorized(DeviceTokens),
+/// 解析回调请求行里的路径与查询参数；`Ok(None)` 表示不是回调路径。
+fn parse_callback(target: &str, expected_state: &str) -> Result<Option<Callback>, IpcError> {
+    let url = tauri::Url::parse(&format!("http://localhost{target}"))
+        .map_err(|e| IpcError::new("login_failed", format!("回调地址无法解析：{e}")))?;
+    let path = url.path().to_string();
+    if !CALLBACK_PATHS.contains(&path.as_str()) {
+        return Ok(None);
+    }
+    let params: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+    let get = |name: &str| {
+        params
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone())
+    };
+    if get("state").as_deref() != Some(expected_state) {
+        return Err(IpcError::new(
+            "login_failed",
+            "登录回调校验失败（state 不匹配），请重试",
+        ));
+    }
+    if let Some(error) = get("error").or_else(|| get("error_description")) {
+        return Err(IpcError::new(
+            "login_failed",
+            format!("Kiro 登录失败：{error}"),
+        ));
+    }
+    let code = get("code")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| IpcError::new("login_failed", "登录回调缺少授权码，请重新发起登录"))?;
+    Ok(Some(Callback {
+        code,
+        login_option: get("login_option").unwrap_or_default(),
+        path,
+    }))
 }
 
-struct DeviceTokens {
+async fn complete_login(
+    app: AppHandle,
+    client: &reqwest::Client,
+    base: &str,
+    callback: &Callback,
+    verifier: &str,
+    port: u16,
+) -> OauthStatus {
+    let provider = match provider_from_login_option(&callback.login_option) {
+        Some(provider) => provider,
+        None => {
+            let shown = if callback.login_option.is_empty() {
+                "当前方式".to_string()
+            } else {
+                callback.login_option.clone()
+            };
+            return failed_status(
+                None,
+                &IpcError::new(
+                    "login_unsupported",
+                    format!("暂不支持 {shown} 登录，请在网页中选择 Google 或 GitHub"),
+                ),
+            );
+        }
+    };
+
+    publish(
+        &app,
+        OauthStatus {
+            phase: OauthPhase::Verifying,
+            provider: Some(provider.clone()),
+            verification_url: None,
+            message: Some("登录成功，正在验证账号…".to_string()),
+            credential_id: None,
+        },
+    );
+
+    // token 交换的 redirect_uri 必须与回调路径和 login_option 完全一致
+    let redirect_uri = callback_redirect_uri(port, &callback.path, &callback.login_option);
+    let tokens = match exchange_code(client, base, &callback.code, verifier, &redirect_uri).await {
+        Ok(tokens) => tokens,
+        Err(error) => return failed_status(Some(provider), &error),
+    };
+
+    let core = match app.state::<AppState>().core() {
+        Ok(core) => core,
+        Err(error) => return failed_status(Some(provider), &error),
+    };
+    match create_account(&core, &provider, tokens).await {
+        Ok((credential_id, verified)) => OauthStatus {
+            phase: OauthPhase::Success,
+            provider: Some(provider),
+            verification_url: None,
+            message: Some(if verified {
+                "账号已添加并启用".to_string()
+            } else {
+                "账号已添加，但验活失败，暂时保持禁用".to_string()
+            }),
+            credential_id: Some(credential_id),
+        },
+        Err(error) => failed_status(Some(provider), &error),
+    }
+}
+
+/// 与浏览器回调一致的 token 交换 redirect_uri（路径和 login_option 必须精确重建）
+fn callback_redirect_uri(port: u16, path: &str, login_option: &str) -> String {
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    format!("http://localhost:{port}{path}?login_option={login_option}")
+}
+
+struct AuthTokens {
     refresh_token: String,
     profile_arn: Option<String>,
 }
 
-async fn authorize(
+async fn exchange_code(
     client: &reqwest::Client,
     base: &str,
-    provider: &str,
-) -> Result<DeviceAuthorization, IpcError> {
-    let mut last_error = None;
-    for client_id in CLIENT_IDS {
-        let request = serde_json::json!({
-            "clientId": client_id,
-            "loginProvider": provider,
-        });
-        let response = client
-            .post(format!("{base}{DEVICE_PATH}"))
-            .header("Accept", "application/json, text/plain, */*")
-            .header("Content-Type", "application/json")
-            .header("Connection", "close")
-            .json(&request)
-            .send()
-            .await;
-        match response {
-            Ok(response) => {
-                let status = response.status();
-                let body = response.text().await.unwrap_or_default();
-                if !status.is_success() {
-                    last_error = Some(describe_http_error(status.as_u16(), &body));
-                    continue;
-                }
-                return serde_json::from_str::<DeviceAuthorization>(&body).map_err(|e| {
-                    IpcError::new("login_failed", format!("授权服务响应无法解析：{e}"))
-                });
-            }
-            Err(e) => last_error = Some(describe_request_error(&e)),
-        }
+    code: &str,
+    verifier: &str,
+    redirect_uri: &str,
+) -> Result<AuthTokens, IpcError> {
+    let response = client
+        .post(format!("{base}{TOKEN_PATH}"))
+        .header("Accept", "application/json, text/plain, */*")
+        .header("Content-Type", "application/json")
+        .header("Connection", "close")
+        .json(&serde_json::json!({
+            "code": code,
+            "code_verifier": verifier,
+            "redirect_uri": redirect_uri,
+        }))
+        .send()
+        .await
+        .map_err(|e| describe_request_error(&e))?;
+
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(describe_http_error(status.as_u16(), &body));
     }
-    Err(last_error
-        .unwrap_or_else(|| IpcError::new("login_failed", "无法连接 Kiro 授权服务，请稍后重试")))
-}
-
-async fn poll_once(
-    client: &reqwest::Client,
-    base: &str,
-    device_code: &str,
-) -> Result<PollOutcome, IpcError> {
-    let mut last_error = None;
-    for client_id in CLIENT_IDS {
-        let request = serde_json::json!({
-            "clientId": client_id,
-            "deviceCode": device_code,
-        });
-        let response = client
-            .post(format!("{base}{POLL_PATH}"))
-            .header("Accept", "application/json, text/plain, */*")
-            .header("Content-Type", "application/json")
-            .header("Connection", "close")
-            .json(&request)
-            .send()
-            .await;
-        let response = match response {
-            Ok(response) => response,
-            Err(e) => {
-                last_error = Some(describe_request_error(&e));
-                continue;
-            }
-        };
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        let parsed = serde_json::from_str::<DevicePoll>(&body).ok();
-
-        // 授权未完成时服务端可能回 400/428，也返回非成功状态；以 body 里的 status/error 为准
-        if let Some(poll) = parsed {
-            let state = poll.status.as_deref().unwrap_or("").to_ascii_lowercase();
-            match state.as_str() {
-                "authorization_pending" | "pending" => return Ok(PollOutcome::Pending),
-                "slow_down" => return Ok(PollOutcome::SlowDown),
-                "authorized" | "authorization_granted" => {
-                    let refresh_token = poll.refresh_token.filter(|t| !t.is_empty());
-                    return match refresh_token {
-                        Some(refresh_token) => Ok(PollOutcome::Authorized(DeviceTokens {
-                            refresh_token,
-                            profile_arn: poll.profile_arn.filter(|arn| !arn.is_empty()),
-                        })),
-                        None => Err(IpcError::new(
-                            "login_failed",
-                            "授权成功但服务端没有返回 refreshToken，请重试",
-                        )),
-                    };
-                }
-                "expired_token" | "expired" => {
-                    return Err(IpcError::new("login_expired", "授权已过期，请重新发起登录"));
-                }
-                "access_denied" | "denied" => {
-                    return Err(IpcError::new("login_denied", "授权被拒绝"));
-                }
-                other if !other.is_empty() => {
-                    return Err(IpcError::new("login_failed", format!("授权失败：{other}")));
-                }
-                _ => {}
-            }
-        }
-
-        if !status.is_success() {
-            last_error = Some(describe_http_error(status.as_u16(), &body));
-            continue;
-        }
-        return Err(IpcError::new(
-            "login_failed",
-            format!("授权服务响应无法解析：{}", truncate(&body, 200)),
-        ));
-    }
-    Err(last_error.unwrap_or_else(|| IpcError::new("login_failed", "轮询授权结果失败")))
+    let parsed: TokenResponse = serde_json::from_str(&body)
+        .map_err(|e| IpcError::new("login_failed", format!("登录响应无法解析：{e}")))?;
+    let refresh_token = parsed
+        .refresh_token
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| {
+            IpcError::new(
+                "login_failed",
+                "登录成功但服务端没有返回 refreshToken，请重试",
+            )
+        })?;
+    Ok(AuthTokens {
+        refresh_token,
+        profile_arn: parsed.profile_arn.filter(|arn| !arn.is_empty()),
+    })
 }
 
 /// 创建账号 → 验活 → 启用（复用 Kiro IDE / KAM 导入的约定）
 async fn create_account(
     core: &crate::state::Core,
     provider: &str,
-    tokens: DeviceTokens,
+    tokens: AuthTokens,
 ) -> Result<(u64, bool), IpcError> {
     let admin = core.admin();
     let hash = refresh_token_hash(&tokens.refresh_token);
@@ -475,24 +489,78 @@ async fn create_account(
     Ok((id, verified))
 }
 
-/// "google" / "github" → Kiro 的 "Google" / "Github"
-fn normalize_provider(value: &str) -> Result<String, IpcError> {
+/// 选取一个可用且被 Kiro 允许的回调端口
+fn bind_callback_listener() -> Result<(TcpListener, u16), IpcError> {
+    for port in CALLBACK_PORTS {
+        if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port)) {
+            listener
+                .set_nonblocking(true)
+                .map_err(|e| IpcError::new("login_failed", format!("本地回调端口设置失败：{e}")))?;
+            let listener = TcpListener::from_std(listener)
+                .map_err(|e| IpcError::new("login_failed", format!("本地回调端口不可用：{e}")))?;
+            return Ok((listener, port));
+        }
+    }
+    Err(IpcError::new(
+        "login_failed",
+        "Kiro 允许的回调端口都被占用，请稍后重试（3128 / 4649 / 6588 / 8008 / 9091 / 49xxx / 5xxxx）",
+    ))
+}
+
+fn portal_url(state: &str, challenge: &str, port: u16) -> Result<tauri::Url, IpcError> {
+    let mut url = tauri::Url::parse(PORTAL_URL)
+        .map_err(|e| IpcError::new("login_failed", format!("登录页地址无效：{e}")))?;
+    url.query_pairs_mut()
+        .append_pair("state", state)
+        .append_pair("code_challenge", challenge)
+        .append_pair("code_challenge_method", "S256")
+        .append_pair("redirect_uri", &format!("http://localhost:{port}"))
+        .append_pair("redirect_from", "KiroIDE");
+    Ok(url)
+}
+
+fn provider_from_login_option(value: &str) -> Option<String> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "google" => Ok("Google".to_string()),
-        "github" | "git_hub" => Ok("Github".to_string()),
-        other => Err(IpcError::new(
-            "invalid_request",
-            format!("不支持的登录方式：{other}"),
-        )),
+        "google" => Some("Google".to_string()),
+        "github" => Some("Github".to_string()),
+        _ => None,
     }
 }
 
-fn auth_base(config: &Config) -> String {
-    format!(
-        "https://prod.{}.auth.desktop.kiro.dev",
-        config.effective_auth_region()
-    )
+fn random_token(bytes: usize) -> Result<String, IpcError> {
+    let mut buffer = vec![0u8; bytes];
+    getrandom::fill(&mut buffer)
+        .map_err(|e| IpcError::new("login_failed", format!("无法生成登录随机数：{e}")))?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buffer))
 }
+
+fn code_challenge(verifier: &str) -> String {
+    let digest = Sha256::digest(verifier.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
+}
+
+async fn respond(
+    socket: &mut tokio::net::TcpStream,
+    status: u16,
+    body: &str,
+) -> std::io::Result<()> {
+    let reason = match status {
+        200 => "OK",
+        400 => "Bad Request",
+        _ => "Not Found",
+    };
+    let response = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    socket.write_all(response.as_bytes()).await
+}
+
+const SUCCESS_PAGE: &str = "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><title>登录成功</title>\
+<style>body{font-family:-apple-system,BlinkMacSystemFont,\"PingFang SC\",sans-serif;display:flex;min-height:100vh;\
+align-items:center;justify-content:center;background:#F7F3EC;color:#2B241C;margin:0}\
+main{text-align:center;padding:32px}h1{font-size:20px;margin:0 0 8px}p{color:#73685B;margin:0}</style></head>\
+<body><main><h1>登录成功</h1><p>可以关闭此页面并返回 KiroProxy。</p></main></body></html>";
 
 fn proxy_of(config: &Config) -> Option<ProxyConfig> {
     let url = config.proxy_url.clone()?;
@@ -510,7 +578,6 @@ fn failed_status(provider: Option<String>, error: &IpcError) -> OauthStatus {
     OauthStatus {
         phase: OauthPhase::Failed,
         provider,
-        user_code: None,
         verification_url: None,
         message: Some(error.message.clone()),
         credential_id: None,
@@ -521,7 +588,6 @@ fn cancelled_status(provider: Option<String>) -> OauthStatus {
     OauthStatus {
         phase: OauthPhase::Cancelled,
         provider,
-        user_code: None,
         verification_url: None,
         message: Some("已取消登录".to_string()),
         credential_id: None,
@@ -569,54 +635,9 @@ fn truncate(value: &str, max: usize) -> String {
     format!("{head}…")
 }
 
-#[derive(Debug, Deserialize)]
-struct DeviceAuthorization {
-    #[serde(rename = "deviceCode", alias = "device_code", default)]
-    device_code: String,
-    #[serde(rename = "userCode", alias = "user_code", default)]
-    user_code: Option<String>,
-    #[serde(rename = "verificationUri", alias = "verification_uri", default)]
-    verification_uri: Option<String>,
-    #[serde(
-        rename = "verificationUriComplete",
-        alias = "verification_uri_complete",
-        default
-    )]
-    verification_uri_complete: Option<String>,
-    #[serde(
-        rename = "expiresInMilliseconds",
-        alias = "expires_in_milliseconds",
-        default
-    )]
-    expires_in_milliseconds: Option<u64>,
-    #[serde(
-        rename = "intervalMilliseconds",
-        alias = "interval_milliseconds",
-        default
-    )]
-    interval_milliseconds: Option<u64>,
-}
-
-impl DeviceAuthorization {
-    fn interval(&self) -> Duration {
-        Duration::from_millis(self.interval_milliseconds.unwrap_or(5_000).max(1_000))
-    }
-
-    fn ttl(&self) -> Duration {
-        match self.expires_in_milliseconds {
-            Some(ms) if ms > 0 => Duration::from_millis(ms),
-            _ => FALLBACK_TTL,
-        }
-    }
-}
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DevicePoll {
-    /// 服务端可能用 `status` 或 `error` 表示 pending / slow_down 等状态
-    #[serde(default, alias = "error")]
-    status: Option<String>,
-    /// 目前只用 refreshToken 建号，accessToken 保留便于排障
+struct TokenResponse {
     #[serde(default)]
     #[allow(dead_code)]
     access_token: Option<String>,
@@ -634,62 +655,80 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalizes_provider_names() {
-        assert_eq!(normalize_provider("google").unwrap(), "Google");
-        assert_eq!(normalize_provider(" Google ").unwrap(), "Google");
-        assert_eq!(normalize_provider("github").unwrap(), "Github");
-        assert_eq!(normalize_provider("GitHub").unwrap(), "Github");
-        assert!(normalize_provider("aws").is_err());
+    fn portal_url_carries_pkce_and_loopback_redirect() {
+        let challenge = code_challenge("verifier");
+        let url = portal_url("state-1", &challenge, 3128).unwrap();
+        let text = url.as_str();
+        assert!(text.starts_with("https://app.kiro.dev/signin?"));
+        assert!(text.contains("state=state-1"));
+        assert!(text.contains(&format!("code_challenge={challenge}")));
+        assert!(text.contains("code_challenge_method=S256"));
+        assert!(text.contains("redirect_uri=http%3A%2F%2Flocalhost%3A3128"));
+        assert!(text.contains("redirect_from=KiroIDE"));
     }
 
     #[test]
-    fn parses_device_authorization() {
-        let json = r#"{
-            "deviceCode": "dc-1",
-            "userCode": "ABCD-EFGH",
-            "verificationUri": "https://example.com/device",
-            "verificationUriComplete": "https://example.com/device?code=ABCD-EFGH",
-            "expiresInMilliseconds": 600000,
-            "intervalMilliseconds": 3000
-        }"#;
-        let parsed: DeviceAuthorization = serde_json::from_str(json).unwrap();
-        assert_eq!(parsed.device_code, "dc-1");
-        assert_eq!(parsed.user_code.as_deref(), Some("ABCD-EFGH"));
-        assert_eq!(parsed.interval(), Duration::from_millis(3000));
-        assert_eq!(parsed.ttl(), Duration::from_millis(600_000));
+    fn code_challenge_is_base64url_sha256_without_padding() {
+        let challenge = code_challenge("testverifier123");
+        assert_eq!(challenge.len(), 43);
+        assert!(!challenge.contains('='));
+        assert!(!challenge.contains('+'));
+        assert!(!challenge.contains('/'));
     }
 
     #[test]
-    fn device_authorization_accepts_snake_case() {
-        let json =
-            r#"{"device_code":"dc","interval_milliseconds":100,"expires_in_milliseconds":0}"#;
-        let parsed: DeviceAuthorization = serde_json::from_str(json).unwrap();
-        assert_eq!(parsed.device_code, "dc");
-        assert_eq!(parsed.ttl(), FALLBACK_TTL);
-        // 间隔有下限，避免被服务端异常值打爆
-        assert_eq!(parsed.interval(), Duration::from_millis(1000));
-    }
-
-    #[test]
-    fn parses_poll_states() {
-        let pending: DevicePoll =
-            serde_json::from_str(r#"{"status":"authorization_pending"}"#).unwrap();
-        assert_eq!(pending.status.as_deref(), Some("authorization_pending"));
-
-        let slow: DevicePoll = serde_json::from_str(r#"{"status":"slow_down"}"#).unwrap();
-        assert_eq!(slow.status.as_deref(), Some("slow_down"));
-
-        let authorized: DevicePoll = serde_json::from_str(
-            r#"{"status":"authorized","accessToken":"a","refreshToken":"r","profileArn":"arn:aws:codewhisperer:us-east-1:1:profile/x"}"#,
+    fn callback_parsing_checks_state_and_code() {
+        let ok = parse_callback(
+            "/oauth/callback?login_option=google&code=abc&state=s1",
+            "s1",
         )
+        .unwrap()
         .unwrap();
-        assert_eq!(authorized.status.as_deref(), Some("authorized"));
-        assert_eq!(authorized.refresh_token.as_deref(), Some("r"));
+        assert_eq!(ok.code, "abc");
+        assert_eq!(ok.login_option, "google");
+        assert_eq!(ok.path, "/oauth/callback");
+
+        // 非回调路径返回 None（继续等待）
+        assert!(parse_callback("/favicon.ico", "s1").unwrap().is_none());
+
+        // state 不匹配直接失败
+        let wrong = parse_callback("/oauth/callback?code=abc&state=bad", "s1").unwrap_err();
+        assert!(wrong.message.contains("state"));
+
+        // 缺少 code
+        let missing =
+            parse_callback("/signin/callback?state=s1&login_option=github", "s1").unwrap_err();
+        assert!(missing.message.contains("授权码"));
+    }
+
+    #[test]
+    fn exchange_redirect_uri_rebuilds_path_and_option() {
+        assert_eq!(
+            callback_redirect_uri(53153, "/oauth/callback", "github"),
+            "http://localhost:53153/oauth/callback?login_option=github"
+        );
+        // 兼容没有前导斜杠的路径
+        assert_eq!(
+            callback_redirect_uri(8008, "signin/callback", "google"),
+            "http://localhost:8008/signin/callback?login_option=google"
+        );
+    }
+
+    #[test]
+    fn maps_login_option_to_provider() {
+        assert_eq!(provider_from_login_option("google").unwrap(), "Google");
+        assert_eq!(provider_from_login_option("GitHub").unwrap(), "Github");
+        assert!(provider_from_login_option("builderid").is_none());
+    }
+
+    #[test]
+    fn random_token_is_url_safe() {
+        let token = random_token(24).unwrap();
+        assert_eq!(token.len(), 32);
         assert!(
-            authorized
-                .profile_arn
-                .unwrap()
-                .starts_with("arn:aws:codewhisperer")
+            token
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         );
     }
 

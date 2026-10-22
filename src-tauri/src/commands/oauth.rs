@@ -9,13 +9,10 @@ pub fn get_oauth_status(app: tauri::AppHandle) -> OauthStatus {
     oauth::status(&app)
 }
 
-/// 发起浏览器登录：provider 为 "google" 或 "github"
+/// 打开 Kiro 登录页并等待网页完成登录（登录方式由网页让用户选择）
 #[tauri::command]
-pub async fn start_browser_login(
-    app: tauri::AppHandle,
-    provider: String,
-) -> Result<OauthStatus, IpcError> {
-    oauth::start(app, provider).await
+pub async fn start_browser_login(app: tauri::AppHandle) -> Result<OauthStatus, IpcError> {
+    oauth::start(app).await
 }
 
 #[tauri::command]

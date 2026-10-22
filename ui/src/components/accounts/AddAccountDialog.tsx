@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
-import { GitBranchIcon, GlobeIcon, Loader2Icon, LogInIcon } from "lucide-react"
+import { Loader2Icon, LogInIcon } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -32,7 +32,7 @@ import type { AddCredentialRequest, KamPreview, KiroIdePreview, OauthStatus } fr
 
 export type AddAccountTab = "oauth" | "kam" | "manual" | "kiroide"
 
-/** 浏览器登录页签：Kiro 官方 CLI 同款的 device code flow（打开浏览器授权 → 自动建号） */
+/** 浏览器登录页签：打开 Kiro 官方登录页（和 IDE/CLI 一样在网页里选择账号）→ 自动建号 */
 function BrowserLoginForm({ onDone }: { onDone: () => void }) {
   const queryClient = useQueryClient()
   const [status, setStatus] = useState<OauthStatus | null>(null)
@@ -75,10 +75,10 @@ function BrowserLoginForm({ onDone }: { onDone: () => void }) {
     doneRef.current()
   }, [queryClient, status?.phase, status?.message])
 
-  const start = async (provider: "google" | "github") => {
+  const start = async () => {
     setBusy(true)
     try {
-      setStatus(await ipc.startBrowserLogin(provider))
+      setStatus(await ipc.startBrowserLogin())
     } catch (error) {
       toast.error(errorMessage(error))
     } finally {
@@ -119,11 +119,6 @@ function BrowserLoginForm({ onDone }: { onDone: () => void }) {
             <Loader2Icon className="size-4 animate-spin" aria-hidden="true" />
             {status?.phase === "verifying" ? strings.accounts.oauth.verifying : strings.accounts.oauth.waiting}
           </div>
-          {status?.userCode ? (
-            <code className="w-fit rounded-[8px] bg-card px-2 py-1 font-mono text-[12px]">
-              {strings.accounts.oauth.userCode(status.userCode)}
-            </code>
-          ) : null}
           {status?.verificationUrl ? (
             <p className="truncate font-mono text-[11px] text-muted-foreground" title={status.verificationUrl}>
               {status.verificationUrl}
@@ -146,24 +141,10 @@ function BrowserLoginForm({ onDone }: { onDone: () => void }) {
             </p>
           ) : null}
           <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="secondary"
-              onClick={() => void start("google")}
-              disabled={busy}
-            >
-              <GlobeIcon />
-              {strings.accounts.oauth.google}
+            <Button onClick={() => void start()} disabled={busy}>
+              <LogInIcon />
+              {failed ? strings.accounts.oauth.retry : strings.accounts.oauth.login}
             </Button>
-            <Button variant="secondary" onClick={() => void start("github")} disabled={busy}>
-              <GitBranchIcon />
-              {strings.accounts.oauth.github}
-            </Button>
-            {failed ? (
-              <span className="flex items-center gap-1 text-[12px] text-muted-foreground">
-                <LogInIcon className="size-3.5" aria-hidden="true" />
-                {strings.accounts.oauth.retry}
-              </span>
-            ) : null}
           </div>
         </div>
       )}
