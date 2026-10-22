@@ -215,6 +215,20 @@ pub struct Config {
     #[serde(default = "default_write_chunking_max_lines")]
     pub write_chunking_max_lines: u32,
 
+    /// effort 档位上限（`low` / `medium` / `high` / `xhigh` / `max`）
+    ///
+    /// 客户端（Claude Code、ZCode 等）几乎总是发 `output_config.effort = "max"`，
+    /// 代理原样透传给 Kiro 上游。同一道题实测：max 平均 46s / 3,676 思考字符，
+    /// xhigh 12s / 162 字符，high 9s / 104 字符——max 的思考量和耗时都是数量级差距，
+    /// 而编码场景下回答质量提升并不相称。
+    ///
+    /// 默认 `xhigh`：保留部分原生推理，同时避免 max 的长尾（本机 62 条 >300s 的
+    /// 请求思考中位达 1 万 token）。设为 `max` 表示不限制（恢复历史行为）。
+    /// 仅下调不上调：客户端发 `low`/`high` 时按原值透传。
+    /// 可在设置页热修改（仅影响之后的新请求）。
+    #[serde(default = "default_max_effort")]
+    pub max_effort: String,
+
     /// Kiro 请求体落盘取证开关（临时调试用）
     ///
     /// true 时每个发往 Kiro 的请求体都会写入应用数据目录的 `kiro-body-dump/`
@@ -249,6 +263,10 @@ pub struct Config {
 
 fn default_write_chunking_max_lines() -> u32 {
     crate::anthropic::DEFAULT_WRITE_CHUNKING_MAX_LINES
+}
+
+fn default_max_effort() -> String {
+    crate::anthropic::DEFAULT_MAX_EFFORT.as_str().to_string()
 }
 
 fn default_host() -> String {
@@ -327,6 +345,7 @@ impl Default for Config {
             forward_suggestion_mode: false,
             thinking_as_text: true,
             write_chunking_max_lines: default_write_chunking_max_lines(),
+            max_effort: default_max_effort(),
             dump_kiro_body: false,
             log_file: None,
             debug_logs: false,
@@ -480,6 +499,11 @@ impl Config {
             && let Ok(n) = v.parse::<u32>()
         {
             self.write_chunking_max_lines = n;
+        }
+        if let Ok(v) = env::var("MAX_EFFORT")
+            && crate::anthropic::EffortCap::parse(&v).is_some()
+        {
+            self.max_effort = v.trim().to_ascii_lowercase();
         }
 
         // CacheSimulationConfig 嵌套字段覆盖

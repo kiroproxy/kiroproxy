@@ -325,6 +325,8 @@ export interface FailureLogPage {
 
 export type LogKind = "runtime" | "throttle" | "failure"
 
+export type EffortCap = "low" | "medium" | "high" | "xhigh" | "max"
+
 export interface SettingsView {
   host: string
   port: number
@@ -338,6 +340,7 @@ export interface SettingsView {
   loadBalancingMode: "priority" | "balanced"
   maxRpmPerCredential: number
   writeChunkingMaxLines: number
+  maxEffort: EffortCap
   forwardSuggestionMode: boolean
   clientTokenPassthrough: boolean
   thinkingAsText: boolean

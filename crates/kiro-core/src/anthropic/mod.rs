@@ -32,7 +32,8 @@ pub mod types;
 mod websearch;
 
 pub use converter::{
-    DEFAULT_WRITE_CHUNKING_MAX_LINES, set_write_chunking_max_lines, write_chunking_max_lines,
+    DEFAULT_MAX_EFFORT, DEFAULT_WRITE_CHUNKING_MAX_LINES, EffortCap, max_effort, set_max_effort,
+    set_write_chunking_max_lines, write_chunking_max_lines,
 };
 pub use handlers::kiro_body_dump_enabled;
 pub use handlers::set_kiro_body_dump_enabled;

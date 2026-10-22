@@ -144,6 +144,14 @@ pub async fn set_write_chunking_max_lines(
 }
 
 #[tauri::command]
+pub async fn set_max_effort(
+    state: tauri::State<'_, AppState>,
+    value: String,
+) -> Result<ApplyResult, IpcError> {
+    apply(state, move |core| settings::set_max_effort(core, &value)).await
+}
+
+#[tauri::command]
 pub async fn set_runtime_config(
     state: tauri::State<'_, AppState>,
     patch: RuntimeConfigPatch,

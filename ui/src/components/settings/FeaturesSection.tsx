@@ -1,12 +1,28 @@
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select"
 import { ipc } from "@/lib/ipc"
 import { strings } from "@/lib/strings"
-import type { ApplyResult, SettingsView } from "@/lib/types"
+import type { ApplyResult, EffortCap, SettingsView } from "@/lib/types"
 import { useUnsavedChanges } from "@/lib/unsaved-changes"
 import { SettingRow, SettingsCard, SwitchRow } from "./parts"
 import { isNonNegativeInteger, useApplySetting } from "./hooks"
+
+function effortLabel(value: EffortCap): string {
+  switch (value) {
+    case "low":
+      return strings.settings.effortLow
+    case "medium":
+      return strings.settings.effortMedium
+    case "high":
+      return strings.settings.effortHigh
+    case "max":
+      return strings.settings.effortMax
+    default:
+      return strings.settings.effortXhigh
+  }
+}
 
 export function FeaturesSection({ data }: { data: SettingsView }) {
   const apply = useApplySetting()
@@ -57,6 +73,28 @@ export function FeaturesSection({ data }: { data: SettingsView }) {
         checked={data.promptCacheAccounting}
         onChange={toggle(ipc.setPromptCacheAccounting)}
       />
+      <SettingRow
+        label={strings.settings.maxEffort}
+        desc={strings.settings.maxEffortHint}
+      >
+        <Select
+          value={data.maxEffort}
+          onValueChange={(value) =>
+            void apply.run(() => ipc.setMaxEffort(String(value)))
+          }
+        >
+          <SelectTrigger className="w-[180px]" aria-label={strings.settings.maxEffort}>
+            <span>{effortLabel(data.maxEffort)}</span>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="low">{strings.settings.effortLow}</SelectItem>
+            <SelectItem value="medium">{strings.settings.effortMedium}</SelectItem>
+            <SelectItem value="high">{strings.settings.effortHigh}</SelectItem>
+            <SelectItem value="xhigh">{strings.settings.effortXhigh}</SelectItem>
+            <SelectItem value="max">{strings.settings.effortMax}</SelectItem>
+          </SelectContent>
+        </Select>
+      </SettingRow>
       <SettingRow
         label={strings.settings.writeChunkingMaxLines}
         desc={strings.settings.writeChunkingHint}

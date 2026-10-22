@@ -88,6 +88,7 @@ pub fn run() {
             commands::settings::set_debug_logs,
             commands::settings::set_dump_kiro_body,
             commands::settings::set_write_chunking_max_lines,
+            commands::settings::set_max_effort,
             commands::settings::set_runtime_config,
             commands::settings::test_connection,
             // 日志

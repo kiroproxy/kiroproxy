@@ -296,8 +296,13 @@ pub async fn post_messages(
         .map(|f| f.format_type == "json_schema")
         .unwrap_or(false);
 
-    // effort 级别（output_config 整体存在时取 effort 字符串，否则 None）
-    let effort = payload.output_config.as_ref().map(|c| c.effort.clone());
+    // effort 级别（output_config 整体存在时取 effort 字符串，否则 None）。
+    // 记录「实际发往上游」的档位：客户端发 max 被上限钳到 xhigh 时，
+    // 入库/UI 徽章应反映真实生效值，而非客户端原始请求值。
+    let effort = payload
+        .output_config
+        .as_ref()
+        .map(|c| crate::anthropic::converter::clamp_effort(&c.effort));
 
     // 思考文本化仅对 Claude Code 客户端生效（OpenAI 兼容端点等保持原生 thinking 语义）
     let thinking_as_text = crate::anthropic::stream::thinking_as_text_enabled()

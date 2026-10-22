@@ -166,6 +166,7 @@ export const ipc = {
   setDumpKiroBody: (enabled: boolean) => call<ApplyResult>("set_dump_kiro_body", { enabled }),
   setWriteChunkingMaxLines: (value: number) =>
     call<ApplyResult>("set_write_chunking_max_lines", { value }),
+  setMaxEffort: (value: string) => call<ApplyResult>("set_max_effort", { value }),
   setRuntimeConfig: (patch: RuntimeConfigPatch) =>
     call<ApplyResult>("set_runtime_config", { patch }),
   testConnection: (req: TestConnectionRequest) =>

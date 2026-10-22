@@ -465,3 +465,103 @@ fn test_additional_fields_skipped_for_unsupported_third_party_models() {
         "minimax-m2.1 实测支持该字段，不应跳过"
     );
 }
+
+// ===== effort 上限钳制 =====
+
+use super::super::fields::{EffortCap, clamp_effort, max_effort, set_max_effort};
+
+/// 钳制只下调不上调：客户端档位低于上限时原样透传。
+#[test]
+fn test_clamp_effort_never_raises_below_cap() {
+    set_max_effort(EffortCap::Xhigh);
+    for level in ["low", "medium", "high", "xhigh"] {
+        assert_eq!(clamp_effort(level), level, "不应上调 {level}");
+    }
+    set_max_effort(EffortCap::Xhigh);
+}
+
+/// max 在默认上限（xhigh）下被下调，这是本次改动的核心行为。
+#[test]
+fn test_clamp_effort_caps_max_to_xhigh_by_default() {
+    set_max_effort(EffortCap::Xhigh);
+    assert_eq!(clamp_effort("max"), "xhigh");
+    assert_eq!(max_effort(), EffortCap::Xhigh);
+}
+
+/// 上限设为 max 时恢复历史透传行为（不限制）。
+#[test]
+fn test_clamp_effort_passthrough_when_cap_is_max() {
+    set_max_effort(EffortCap::Max);
+    assert_eq!(clamp_effort("max"), "max");
+    set_max_effort(EffortCap::Xhigh);
+}
+
+/// 无法识别的档位不被本地改写，交给上游处理。
+#[test]
+fn test_clamp_effort_leaves_unknown_values_untouched() {
+    set_max_effort(EffortCap::High);
+    assert_eq!(clamp_effort("ultra"), "ultra");
+    assert_eq!(clamp_effort(""), "");
+    set_max_effort(EffortCap::Xhigh);
+}
+
+/// 端到端：Claude 系请求体里 output_config.effort 被钳到上限。
+#[test]
+fn test_build_fields_clamps_claude_output_config_effort() {
+    use crate::anthropic::types::{Message as AnthropicMessage, OutputConfig};
+
+    set_max_effort(EffortCap::Xhigh);
+    let req = MessagesRequest {
+        model: "claude-opus-5".to_string(),
+        max_tokens: 8000,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: serde_json::json!("hi"),
+        }],
+        stream: false,
+        system: None,
+        tools: None,
+        tool_choice: None,
+        thinking: None,
+        output_config: Some(OutputConfig {
+            effort: "max".to_string(),
+            format: None,
+        }),
+        metadata: None,
+    };
+    let fields = super::super::fields::build_additional_model_request_fields(&req, "claude-opus-5")
+        .expect("应构建 additionalModelRequestFields");
+    assert_eq!(
+        fields["output_config"]["effort"], "xhigh",
+        "客户端 max 应被钳到默认上限 xhigh，实际: {fields}"
+    );
+}
+
+/// 端到端：GPT 系走 reasoning.effort，同样受上限约束。
+#[test]
+fn test_build_fields_clamps_gpt_reasoning_effort() {
+    use crate::anthropic::types::{Message as AnthropicMessage, OutputConfig};
+
+    set_max_effort(EffortCap::Xhigh);
+    let req = MessagesRequest {
+        model: "gpt-5.6-sol".to_string(),
+        max_tokens: 8000,
+        messages: vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: serde_json::json!("hi"),
+        }],
+        stream: false,
+        system: None,
+        tools: None,
+        tool_choice: None,
+        thinking: None,
+        output_config: Some(OutputConfig {
+            effort: "max".to_string(),
+            format: None,
+        }),
+        metadata: None,
+    };
+    let fields = super::super::fields::build_additional_model_request_fields(&req, "gpt-5.6-sol")
+        .expect("应构建 reasoning 字段");
+    assert_eq!(fields["reasoning"]["effort"], "xhigh", "实际: {fields}");
+}

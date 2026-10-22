@@ -1,10 +1,96 @@
 // Copyright (c) 2026 Harllan He. Licensed under MIT.
 //! additionalModelRequestFields 构建（thinking/output_config/max_tokens/reasoning）
 
+use std::sync::atomic::{AtomicU8, Ordering};
+
 use crate::anthropic::types::MessagesRequest;
 
 use super::model::is_haiku_55;
 use super::thinking::{additional_fields_skipped, is_gpt_model};
+
+/// effort 档位上限的默认值（`xhigh`）。
+///
+/// 客户端（Claude Code / ZCode 等）几乎总是发 `output_config.effort = "max"`，
+/// 实测同一道题同一链路：max 平均 46s / 3,676 思考字符，xhigh 12s / 162 字符，
+/// high 9s / 104 字符。max 的思考量是 xhigh 的 20 倍、耗时 4 倍，且这部分
+/// 思考对最终回答质量的增益在编码场景里并不相称，故默认钳到 `xhigh`。
+pub const DEFAULT_MAX_EFFORT: EffortCap = EffortCap::Xhigh;
+
+/// effort 档位枚举（与 Kiro `output_config.effort` schema 一致，由低到高）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EffortCap {
+    Low = 0,
+    Medium = 1,
+    High = 2,
+    Xhigh = 3,
+    Max = 4,
+}
+
+impl EffortCap {
+    /// 从配置字符串解析；无法识别时返回 `None`（调用方按"不限制"处理）。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" => Some(Self::Xhigh),
+            "max" => Some(Self::Max),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Low,
+            1 => Self::Medium,
+            2 => Self::High,
+            3 => Self::Xhigh,
+            _ => Self::Max,
+        }
+    }
+}
+
+/// 进程级 effort 上限（`Config::max_effort`，默认 `xhigh`）。
+static MAX_EFFORT: AtomicU8 = AtomicU8::new(EffortCap::Xhigh as u8);
+
+/// 设置 effort 上限（启动时按 config 初始化；设置页热切换后经此更新）。
+pub fn set_max_effort(cap: EffortCap) {
+    MAX_EFFORT.store(cap as u8, Ordering::Relaxed);
+}
+
+/// 读取当前 effort 上限。
+pub fn max_effort() -> EffortCap {
+    EffortCap::from_u8(MAX_EFFORT.load(Ordering::Relaxed))
+}
+
+/// 把客户端请求的 effort 钳到全局上限；无法识别的档位原样透传
+/// （交给上游按 schema 拒绝/默认处理，不因本地解析失败改变行为）。
+///
+/// 仅下调、不上调：客户端发 `low` 时不会被提到 `xhigh`。
+pub(crate) fn clamp_effort(requested: &str) -> String {
+    let cap = max_effort();
+    match EffortCap::parse(requested) {
+        Some(want) if want > cap => {
+            tracing::debug!(
+                requested_effort = requested,
+                applied_effort = cap.as_str(),
+                "[EFFORT] 客户端档位超过上限，已下调"
+            );
+            cap.as_str().to_string()
+        }
+        _ => requested.to_string(),
+    }
+}
 
 /// claude-opus-5 / claude-opus-4.7 / claude-opus-4.8 Max Output = 128K（1M 窗口代际）
 const MAX_OUTPUT_TOKENS_LARGE_WINDOW: i32 = 128_000;
@@ -59,7 +145,7 @@ pub(super) fn build_additional_model_request_fields(
             .map(|c| c.effort.as_str())
             .filter(|e| !e.is_empty())
             .unwrap_or("high");
-        return Some(serde_json::json!({ "reasoning": { "effort": effort } }));
+        return Some(serde_json::json!({ "reasoning": { "effort": clamp_effort(effort) } }));
     }
 
     let mut fields = serde_json::Map::new();
@@ -101,7 +187,7 @@ pub(super) fn build_additional_model_request_fields(
         .unwrap_or("low");
     fields.insert(
         "output_config".into(),
-        serde_json::json!({ "effort": effort }),
+        serde_json::json!({ "effort": clamp_effort(effort) }),
     );
 
     if req.max_tokens > 0 {

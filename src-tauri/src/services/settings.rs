@@ -23,6 +23,7 @@ pub struct SettingsView {
     pub load_balancing_mode: String,
     pub max_rpm_per_credential: u32,
     pub write_chunking_max_lines: u32,
+    pub max_effort: String,
     pub forward_suggestion_mode: bool,
     pub client_token_passthrough: bool,
     pub thinking_as_text: bool,
@@ -97,6 +98,7 @@ pub fn settings_view(core: &Core) -> SettingsView {
         load_balancing_mode: admin.get_load_balancing_mode().mode,
         max_rpm_per_credential: admin.max_rpm_per_credential(),
         write_chunking_max_lines: config.write_chunking_max_lines,
+        max_effort: config.max_effort.clone(),
         forward_suggestion_mode: config.forward_suggestion_mode,
         client_token_passthrough: config.client_token_passthrough,
         thinking_as_text: config.thinking_as_text,
@@ -192,6 +194,19 @@ pub fn set_write_chunking_max_lines(core: &Core, value: u32) -> Result<ApplyResu
     core.config.write().write_chunking_max_lines = value;
     kiro_core::anthropic::set_write_chunking_max_lines(value);
     Ok(ApplyResult::applied(core, "writeChunkingMaxLines"))
+}
+
+/// 设置 effort 档位上限（`low`/`medium`/`high`/`xhigh`/`max`），热生效。
+pub fn set_max_effort(core: &Core, value: &str) -> Result<ApplyResult, IpcError> {
+    let cap = kiro_core::anthropic::EffortCap::parse(value)
+        .ok_or_else(|| IpcError::new("invalid_input", format!("未知的 effort 档位: {value}")))?;
+    let normalized = cap.as_str().to_string();
+    let _guard = core.persist_lock.lock();
+    core.config_store
+        .update_field("maxEffort", json!(normalized))?;
+    core.config.write().max_effort = normalized;
+    kiro_core::anthropic::set_max_effort(cap);
+    Ok(ApplyResult::applied(core, "maxEffort"))
 }
 
 pub fn set_debug_logs(core: &Core, enabled: bool) -> Result<ApplyResult, IpcError> {
@@ -382,6 +397,9 @@ pub fn apply_runtime_flags(config: &Config) {
     kiro_core::anthropic::set_output_tokens_include_thinking(config.output_tokens_include_thinking);
     kiro_core::anthropic::set_models_official_aliases(config.models_official_aliases);
     kiro_core::anthropic::set_write_chunking_max_lines(config.write_chunking_max_lines);
+    if let Some(cap) = kiro_core::anthropic::EffortCap::parse(&config.max_effort) {
+        kiro_core::anthropic::set_max_effort(cap);
+    }
     kiro_core::anthropic::set_kiro_body_dump_enabled(config.dump_kiro_body);
 }
 
