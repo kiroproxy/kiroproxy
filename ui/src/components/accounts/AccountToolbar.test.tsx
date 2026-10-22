@@ -9,8 +9,10 @@ const counts: Record<AccountStatusFilter, number> = {
   available: 2,
   lowQuota: 1,
   unstable: 0,
+  suspended: 0,
   exhausted: 0,
   needsLogin: 0,
+  needsProfileArn: 0,
   disabled: 0,
 }
 

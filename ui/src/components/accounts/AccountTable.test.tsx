@@ -75,3 +75,13 @@ it("derives status pills from health and monthly quota", () => {
   expect(screen.getByText("额度将尽")).toBeInTheDocument()
   expect(screen.getAllByText("413 / 1,000").length).toBeGreaterThan(0)
 })
+
+it("does not wrap the table in a scroll container that would stop the header from sticking", () => {
+  render(
+    <MemoryRouter>
+      <AccountTable accounts={[baseAccount]} />
+    </MemoryRouter>,
+  )
+  // overflow: hidden 也会成为 sticky 的参照；圆角裁切改用 overflow: clip。
+  expect(screen.getByRole("table").closest(".overflow-hidden, .overflow-auto, .overflow-y-auto")).toBeNull()
+})

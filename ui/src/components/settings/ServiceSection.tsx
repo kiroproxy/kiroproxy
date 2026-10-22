@@ -18,10 +18,19 @@ import { useServerStatus, useUpdateRuntimeConfig } from "@/lib/queries"
 import { markSaved } from "@/lib/save-status"
 import { strings } from "@/lib/strings"
 import type { SettingsView } from "@/lib/types"
+import { serverState, type ServerState } from "@/components/shell/use-shell-status"
 import { useRestartAction } from "./hooks"
 import { SettingRow, SettingsCard } from "./parts"
 
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1"])
+
+/** 重启失败时旧服务仍在运行（degraded），显示「运行中」并用警告色，原因写在说明里。 */
+const STATE_BADGE: Record<ServerState, "neutral" | "success" | "warning" | "danger"> = {
+  loading: "neutral",
+  running: "success",
+  degraded: "warning",
+  stopped: "danger",
+}
 
 export function ServiceSection({ data }: { data: SettingsView }) {
   const server = useServerStatus()
@@ -38,7 +47,7 @@ export function ServiceSection({ data }: { data: SettingsView }) {
       : null
   const hostError = host.trim() ? null : strings.settings.invalidHost
   const dirty = host.trim() !== data.host || portNumber !== data.port
-  const running = !!server.data?.running && !server.data.lastError
+  const state = serverState(server.data)
 
   const save = () => {
     update.mutate(
@@ -103,12 +112,12 @@ export function ServiceSection({ data }: { data: SettingsView }) {
           label={strings.settings.serverStatus}
           desc={server.data?.lastError ?? undefined}
         >
-          <Badge variant={!server.data ? "neutral" : running ? "success" : "danger"}>
-            {!server.data
+          <Badge variant={STATE_BADGE[state]}>
+            {state === "loading"
               ? strings.common.loading
-              : running
-                ? strings.status.running
-                : strings.status.stopped}
+              : state === "stopped"
+                ? strings.status.stopped
+                : strings.status.running}
           </Badge>
           <Button variant="secondary" size="sm" onClick={restart.run} disabled={restart.pending}>
             {restart.pending ? strings.settings.restarting : strings.common.restart}

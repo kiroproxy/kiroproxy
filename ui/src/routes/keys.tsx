@@ -251,15 +251,19 @@ export function KeysPage() {
   const usage = useAllApiKeyUsage()
   const deleteKey = useDeleteApiKey()
   const resetUsage = useResetApiKeyUsage()
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const [editing, setEditing] = useState<ApiKeyView | null>(null)
+  // 每次打开对话框都换一个 session 作为 key，表单从当前值重新初始化，不会带出上一次的输入；
+  // 关闭时组件保持挂载，退出动画不受影响。
+  const [dialog, setDialog] = useState<{ open: boolean; editing: ApiKeyView | null; session: number }>({
+    open: false,
+    editing: null,
+    session: 0,
+  })
   const [revealed, setRevealed] = useState<Record<number, string>>({})
   const [pending, setPending] = useState<PendingAction>(null)
 
-  const openCreate = () => {
-    setEditing(null)
-    setDialogOpen(true)
-  }
+  const openDialog = (editing: ApiKeyView | null) =>
+    setDialog((prev) => ({ open: true, editing, session: prev.session + 1 }))
+  const openCreate = () => openDialog(null)
 
   usePageHeader(
     {
@@ -349,7 +353,7 @@ export function KeysPage() {
           </EmptyContent>
         </Empty>
       ) : (
-        <div className="overflow-hidden rounded-[16px] border border-border bg-card">
+        <div className="overflow-clip rounded-[16px] border border-border bg-card">
           <Table>
             <TableHeader>
               <TableRow className="h-10 hover:bg-transparent">
@@ -423,12 +427,7 @@ export function KeysPage() {
                           <MoreHorizontalIcon />
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            onClick={() => {
-                              setEditing(key)
-                              setDialogOpen(true)
-                            }}
-                          >
+                          <DropdownMenuItem onClick={() => openDialog(key)}>
                             {strings.common.edit}
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => setPending({ kind: "reset", key })}>
@@ -453,10 +452,10 @@ export function KeysPage() {
       )}
 
       <KeyDialog
-        key={editing?.id ?? "new"}
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        editing={editing}
+        key={dialog.session}
+        open={dialog.open}
+        onOpenChange={(open) => setDialog((prev) => ({ ...prev, open }))}
+        editing={dialog.editing}
       />
 
       <AlertDialog open={pending !== null} onOpenChange={(open) => !open && setPending(null)}>

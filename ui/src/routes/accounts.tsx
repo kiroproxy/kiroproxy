@@ -36,9 +36,11 @@ const statusRank: Record<AccountStatus, number> = {
   available: 0,
   lowQuota: 1,
   unstable: 2,
-  needsLogin: 3,
-  disabled: 4,
-  exhausted: 5,
+  suspended: 3,
+  needsLogin: 4,
+  needsProfileArn: 5,
+  disabled: 6,
+  exhausted: 7,
 }
 
 function matchesSearch(item: CredentialStatusItem, term: string): boolean {

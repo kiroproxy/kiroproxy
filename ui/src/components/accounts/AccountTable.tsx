@@ -216,7 +216,7 @@ export function AccountTable({
   }
 
   return (
-    <div className="overflow-hidden rounded-[16px] border border-border bg-card">
+    <div className="overflow-clip rounded-[16px] border border-border bg-card">
       <Table>
         <TableHeader>
           {table.getHeaderGroups().map((group) => (

@@ -14,7 +14,7 @@ export function UsageRecordsTable({
   showAccount?: boolean
 }) {
   return (
-    <div className="overflow-hidden rounded-[16px] border border-border bg-card">
+    <div className="overflow-clip rounded-[16px] border border-border bg-card">
       <Table>
         <TableHeader>
           <TableRow className="h-10 hover:bg-transparent">

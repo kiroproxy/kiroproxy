@@ -2,7 +2,7 @@ import { useLocation } from "react-router-dom"
 import { cn } from "@/lib/utils"
 import { strings } from "@/lib/strings"
 import { useSaveStatus } from "@/lib/save-status"
-import { isHealthy, type ShellStatus } from "./use-shell-status"
+import { serverDotClass, serverState, type ShellStatus } from "./use-shell-status"
 import { openUpdateDialog, useUpdateStatus } from "@/lib/update-status"
 
 function serverLabel(status: ShellStatus["server"]): string {
@@ -34,7 +34,7 @@ function SaveState() {
 export function StatusBar({ status }: { status: ShellStatus }) {
   const { pathname } = useLocation()
   const settingsMode = pathname.startsWith("/settings")
-  const healthy = isHealthy(status.server)
+  const state = serverState(status.server)
   const update = useUpdateStatus()
   const updateReady = update.phase === "ready" && update.latestVersion
 
@@ -45,12 +45,7 @@ export function StatusBar({ status }: { status: ShellStatus }) {
           <SaveState />
         ) : (
           <>
-            <span
-              className={cn(
-                "size-1.5 shrink-0 rounded-full",
-                !status.server ? "bg-faint" : healthy ? "bg-success" : "bg-danger",
-              )}
-            />
+            <span className={cn("size-1.5 shrink-0 rounded-full", serverDotClass[state])} />
             <span className="truncate" title={status.server?.lastError ?? undefined}>
               {serverLabel(status.server)}
             </span>

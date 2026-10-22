@@ -28,6 +28,22 @@ export function useShellStatus(): ShellStatus {
   }
 }
 
-export function isHealthy(status?: ServerStatus): boolean {
-  return !!status && status.running && !status.lastError
+/**
+ * 代理状态。loading：还没拿到状态，不能显示成「未运行」；degraded：仍在运行，但最近一次
+ * 启动或重启出错（重启失败时旧服务继续运行，lastError 记录原因）。
+ */
+export type ServerState = "loading" | "running" | "degraded" | "stopped"
+
+export function serverState(status?: ServerStatus): ServerState {
+  if (!status) return "loading"
+  if (!status.running) return "stopped"
+  return status.lastError ? "degraded" : "running"
+}
+
+/** 各状态的指示圆点颜色。 */
+export const serverDotClass: Record<ServerState, string> = {
+  loading: "bg-faint",
+  running: "bg-success",
+  degraded: "bg-warning",
+  stopped: "bg-danger",
 }

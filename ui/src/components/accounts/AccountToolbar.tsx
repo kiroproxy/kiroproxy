@@ -22,8 +22,10 @@ const filterLabels: Record<AccountStatusFilter, string> = {
   available: strings.accounts.filterAvailable,
   lowQuota: strings.accounts.filterLow,
   unstable: strings.accounts.filterUnstable,
+  suspended: strings.accounts.filterSuspended,
   exhausted: strings.accounts.filterExhausted,
   needsLogin: strings.accounts.filterNeedsLogin,
+  needsProfileArn: strings.accounts.filterNeedsProfileArn,
   disabled: strings.accounts.filterDisabled,
 }
 

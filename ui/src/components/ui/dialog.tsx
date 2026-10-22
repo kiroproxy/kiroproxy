@@ -52,7 +52,8 @@ function DialogContent({
       <DialogPrimitive.Popup
         data-slot="dialog-content"
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-[18px] bg-popover p-5 text-sm text-popover-foreground ring-1 ring-border duration-100 outline-none sm:max-w-[420px] data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          // 高度不超过窗口（上下各留 1rem），内容更长时在弹窗内部滚动，底部按钮不会被推出屏幕。
+          "fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100%-2rem)] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-[18px] bg-popover p-5 text-sm text-popover-foreground ring-1 ring-border duration-100 outline-none sm:max-w-[420px] data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
           className
         )}
         {...props}

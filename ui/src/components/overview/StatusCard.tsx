@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom"
 import { Button } from "@/components/ui/button"
+import { serverDotClass, serverState, type ServerState } from "@/components/shell/use-shell-status"
 import { strings } from "@/lib/strings"
 import { cn } from "@/lib/utils"
 import type { ServerStatus } from "@/lib/types"
@@ -15,8 +16,9 @@ function uptimeText(startedAt?: string | null): string | null {
   return strings.overview.uptime(Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime()) / 60000)))
 }
 
-/** 状态光球：运行中为陶土色渐变并缓慢呼吸，停止或出错时变灰。 */
-function StatusOrb({ running }: { running: boolean }) {
+/** 状态光球：运行中为陶土色渐变并缓慢呼吸，停止时变灰；还没拿到状态时只显示灰色底，不写字。 */
+function StatusOrb({ state }: { state: ServerState }) {
+  const running = state === "running" || state === "degraded"
   return (
     <div className="relative grid size-[120px] shrink-0 place-items-center" aria-hidden="true">
       {running ? (
@@ -30,29 +32,43 @@ function StatusOrb({ running }: { running: boolean }) {
             : "bg-[radial-gradient(circle_at_30%_20%,var(--subtle-hover),var(--border-strong))] text-muted-foreground",
         )}
       >
-        <span className="text-[13px] font-semibold tracking-wide">
-          {running ? strings.overview.orbRunning : strings.overview.orbStopped}
-        </span>
+        {state === "loading" ? null : (
+          <span className="text-[13px] font-semibold tracking-wide">
+            {running ? strings.overview.orbRunning : strings.overview.orbStopped}
+          </span>
+        )}
       </div>
     </div>
   )
 }
 
+const stateLabel: Record<ServerState, string> = {
+  loading: strings.common.loading,
+  running: strings.status.running,
+  degraded: strings.status.running,
+  stopped: strings.status.stopped,
+}
+
 export function StatusCard({ status, available, total }: StatusCardProps) {
-  const running = !!status?.running && !status.lastError
+  const state = serverState(status)
+  const running = state === "running" || state === "degraded"
   const hasAccounts = total > 0
   const uptime = running ? uptimeText(status?.startedAt) : null
 
   const title = hasAccounts
     ? strings.overview.accountsAvailable(available)
     : strings.overview.noAccountsTitle
-  const hint = !status
-    ? strings.common.loading
-    : !running
-      ? (status.lastError ?? strings.overview.stoppedHint)
-      : hasAccounts
-        ? strings.overview.readyHint
-        : strings.overview.emptyHint
+  // 加载中不给提示；运行但带错误（如重启失败、旧服务继续运行）时显示错误原因。
+  const hint =
+    state === "loading"
+      ? null
+      : state === "stopped"
+        ? (status?.lastError ?? strings.overview.stoppedHint)
+        : state === "degraded"
+          ? status?.lastError
+          : hasAccounts
+            ? strings.overview.readyHint
+            : strings.overview.emptyHint
 
   return (
     <div className="relative flex flex-col justify-center overflow-hidden rounded-[22px] border border-border bg-card p-6 shadow-[var(--shadow-card)]">
@@ -63,13 +79,8 @@ export function StatusCard({ status, available, total }: StatusCardProps) {
       <div className="relative flex flex-wrap items-center justify-between gap-6 lg:flex-nowrap">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
-            <span
-              className={cn(
-                "size-2 rounded-full",
-                !status ? "bg-faint" : running ? "bg-success" : "bg-danger",
-              )}
-            />
-            <span>{running ? strings.status.running : strings.status.stopped}</span>
+            <span className={cn("size-2 rounded-full", serverDotClass[state])} />
+            <span>{stateLabel[state]}</span>
             {status ? (
               <span className="num">
                 {status.host}:{status.port}
@@ -86,14 +97,20 @@ export function StatusCard({ status, available, total }: StatusCardProps) {
               </span>
             ) : null}
           </h2>
-          <p
-            className={cn(
-              "mt-2 max-w-[460px] text-[12.5px] leading-5",
-              status && !running ? "text-text-danger" : "text-muted-foreground",
-            )}
-          >
-            {hint}
-          </p>
+          {hint ? (
+            <p
+              className={cn(
+                "mt-2 max-w-[460px] text-[12.5px] leading-5",
+                state === "stopped"
+                  ? "text-text-danger"
+                  : state === "degraded"
+                    ? "text-text-warning"
+                    : "text-muted-foreground",
+              )}
+            >
+              {hint}
+            </p>
+          ) : null}
 
           <div className="mt-5 flex flex-wrap items-center gap-2">
             <Button nativeButton={false} render={<Link to="/accounts" />}>
@@ -105,7 +122,7 @@ export function StatusCard({ status, available, total }: StatusCardProps) {
           </div>
         </div>
 
-        <StatusOrb running={running} />
+        <StatusOrb state={state} />
       </div>
     </div>
   )

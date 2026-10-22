@@ -47,7 +47,7 @@ function isRecent(releasedAt?: string | null): boolean {
 function ModelTable({ models }: { models: ModelView[] }) {
   const headClass = "text-[12px] text-muted-foreground"
   return (
-    <div className="overflow-hidden rounded-[12px] border border-border">
+    <div className="overflow-clip rounded-[12px] border border-border">
       <Table className="table-fixed">
         <colgroup>
           <col />

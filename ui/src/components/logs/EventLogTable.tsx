@@ -53,7 +53,7 @@ export function EventLogTable({ kind, credentialId }: { kind: EventLogKind; cred
 
   return (
     <div className="flex flex-col">
-      <div className="overflow-hidden rounded-[16px] border border-border bg-card">
+      <div className="overflow-clip rounded-[16px] border border-border bg-card">
         <Table className="table-fixed">
           <colgroup>
             <col className="w-[168px]" />

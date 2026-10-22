@@ -6,8 +6,10 @@ export type AccountStatus =
   | "available"
   | "lowQuota"
   | "unstable"
+  | "suspended"
   | "exhausted"
   | "needsLogin"
+  | "needsProfileArn"
   | "disabled"
 
 export type AccountBadgeVariant = "success" | "warning" | "danger" | "info" | "neutral"
@@ -22,8 +24,10 @@ const STATUS_INFO: Record<AccountStatus, { label: string; variant: AccountBadgeV
   available: { label: strings.status.available, variant: "success" },
   lowQuota: { label: strings.status.lowQuota, variant: "warning" },
   unstable: { label: strings.status.unstable, variant: "warning" },
+  suspended: { label: strings.status.suspended, variant: "danger" },
   exhausted: { label: strings.status.exhausted, variant: "danger" },
   needsLogin: { label: strings.status.needsLogin, variant: "info" },
+  needsProfileArn: { label: strings.status.needsProfileArn, variant: "info" },
   disabled: { label: strings.status.disabled, variant: "neutral" },
 }
 
@@ -37,7 +41,9 @@ export function hasQuota(balance?: BalanceResponse | null): balance is BalanceRe
 
 /**
  * 从后端返回的凭据状态推导展示状态。
- * - quota_exceeded 视为已用尽；refreshToken 失效类原因视为需登录；其余禁用视为手动停用；
+ * - 自动禁用按 disabledReason 区分：quota_exceeded 为已用尽，refreshToken 失效类为需登录，
+ *   too_many_failures 为连续失败后的自动停用，profile_arn_missing 为缺 Profile ARN；
+ *   其余禁用（manual）才是手动停用；
  * - healthStatus 为 degraded / unhealthy 表示连续失败或频繁限流，显示为「不稳定」；
  * - 传入余额且月度使用率达到 90% 时显示为「额度将尽」。
  */
@@ -51,6 +57,10 @@ export function accountStatus(
     status = "exhausted"
   } else if (reason === "invalid_refresh_token" || reason === "too_many_refresh_failures") {
     status = "needsLogin"
+  } else if (reason === "too_many_failures") {
+    status = "suspended"
+  } else if (reason === "profile_arn_missing") {
+    status = "needsProfileArn"
   } else if (item.disabled) {
     status = "disabled"
   } else if (item.healthStatus === "degraded" || item.healthStatus === "unhealthy") {
@@ -81,8 +91,10 @@ export const accountStatusFilters: AccountStatusFilter[] = [
   "available",
   "lowQuota",
   "unstable",
+  "suspended",
   "exhausted",
   "needsLogin",
+  "needsProfileArn",
   "disabled",
 ]
 

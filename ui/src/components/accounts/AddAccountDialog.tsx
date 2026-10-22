@@ -32,14 +32,22 @@ import type { AddCredentialRequest, KamPreview, KiroIdePreview, OauthStatus } fr
 
 export type AddAccountTab = "oauth" | "kam" | "manual" | "kiroide"
 
+/** 登录是否仍在进行（等待浏览器授权或正在验证账号）。 */
+function isPendingLogin(status?: OauthStatus | null): status is OauthStatus {
+  return status?.phase === "waiting" || status?.phase === "verifying"
+}
+
 /** 浏览器登录页签：打开 Kiro 官方登录页（和 IDE/CLI 一样在网页里选择账号）→ 自动建号 */
 function BrowserLoginForm({ onDone }: { onDone: () => void }) {
   const queryClient = useQueryClient()
   const [status, setStatus] = useState<OauthStatus | null>(null)
   const [busy, setBusy] = useState(false)
   const doneRef = useRef(onDone)
-  doneRef.current = onDone
   const handledSuccess = useRef(false)
+
+  useEffect(() => {
+    doneRef.current = onDone
+  }, [onDone])
 
   useEffect(() => {
     let disposed = false
@@ -47,7 +55,9 @@ function BrowserLoginForm({ onDone }: { onDone: () => void }) {
     void ipc
       .getOauthStatus()
       .then((initial) => {
-        if (!disposed && initial) setStatus(initial)
+        // 后端会一直保留上一次登录的结果。只恢复进行中的登录；已结束的成功/失败/取消
+        // 若当成新结果，弹窗一打开就会被关掉并重复提示「账号已添加」。
+        if (!disposed && isPendingLogin(initial)) setStatus((current) => current ?? initial)
       })
       .catch(() => {
         // 没有进行中的登录时保持空状态
@@ -340,30 +350,33 @@ function KamForm({ onDone }: { onDone: () => void }) {
       </div>
 
       {preview ? (
-        <div className="overflow-hidden rounded-[12px] border border-border">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>{strings.accounts.previewEmail}</TableHead>
-                <TableHead>{strings.accounts.previewNickname}</TableHead>
-                <TableHead>Provider</TableHead>
-                <TableHead>Auth</TableHead>
-                <TableHead>Token</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {preview.accounts.map((account, index) => (
-                <TableRow key={`${account.maskedToken}-${index}`}>
-                  <TableCell>{account.email ?? "—"}</TableCell>
-                  <TableCell>{account.nickname ?? "—"}</TableCell>
-                  <TableCell>{account.provider ?? "—"}</TableCell>
-                  <TableCell>{account.authMethod ?? "social"}</TableCell>
-                  <TableCell className="font-mono text-[11px]">{account.maskedToken}</TableCell>
+        <div className="overflow-clip rounded-[12px] border border-border">
+          {/* 预览行数不限，限高后在框内滚动，「导入」按钮始终留在视野里 */}
+          <div className="max-h-[240px] overflow-y-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{strings.accounts.previewEmail}</TableHead>
+                  <TableHead>{strings.accounts.previewNickname}</TableHead>
+                  <TableHead>Provider</TableHead>
+                  <TableHead>Auth</TableHead>
+                  <TableHead>Token</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-          <div className="flex flex-wrap gap-3 px-3 py-2 text-[11.5px] text-muted-foreground">
+              </TableHeader>
+              <TableBody>
+                {preview.accounts.map((account, index) => (
+                  <TableRow key={`${account.maskedToken}-${index}`}>
+                    <TableCell>{account.email ?? "—"}</TableCell>
+                    <TableCell>{account.nickname ?? "—"}</TableCell>
+                    <TableCell>{account.provider ?? "—"}</TableCell>
+                    <TableCell>{account.authMethod ?? "social"}</TableCell>
+                    <TableCell className="font-mono text-[11px]">{account.maskedToken}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          <div className="flex flex-wrap gap-3 border-t border-border px-3 py-2 text-[11.5px] text-muted-foreground">
             <span>{strings.accounts.kam.total(preview.accounts.length)}</span>
             {preview.duplicatesInFile > 0 ? (
               <span className="text-text-warning">{strings.accounts.kam.duplicates(preview.duplicatesInFile)}</span>

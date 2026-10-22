@@ -17,35 +17,29 @@ function buildAlerts(accounts?: AccountsResponse): AlertRow[] {
   if (!accounts) return []
   const rows: AlertRow[] = []
   for (const item of accounts.credentials) {
-    const name = accountName(item)
-    if (accountStatus(item).status === "needsLogin") {
-      rows.push({
-        key: `${item.id}-login`,
-        accountId: item.id,
-        label: name,
-        detail: strings.overview.alertNeedsLogin,
-        tone: "info",
-      })
-      continue
+    const push = (kind: string, detail: string, tone: AlertRow["tone"]) =>
+      rows.push({ key: `${item.id}-${kind}`, accountId: item.id, label: accountName(item), detail, tone })
+
+    // 自动禁用的账号只提示禁用原因：后端会把 failureCount 直接设成阈值，不能再报成「连续失败」。
+    switch (accountStatus(item).status) {
+      case "disabled":
+        // 手动停用是用户自己的选择，不算异常。
+        continue
+      case "needsLogin":
+        push("login", strings.overview.alertNeedsLogin, "info")
+        continue
+      case "needsProfileArn":
+        push("profile-arn", strings.overview.alertNeedsProfileArn, "info")
+        continue
+      case "suspended":
+        push("suspended", strings.overview.alertSuspended(item.failureCount), "danger")
+        continue
+      case "exhausted":
+        push("exhausted", strings.overview.alertExhausted, "warning")
+        continue
     }
-    if (item.failureCount > 0) {
-      rows.push({
-        key: `${item.id}-failure`,
-        accountId: item.id,
-        label: name,
-        detail: strings.overview.alertFailure(item.failureCount),
-        tone: "danger",
-      })
-    }
-    if (item.throttleCount > 0) {
-      rows.push({
-        key: `${item.id}-throttle`,
-        accountId: item.id,
-        label: name,
-        detail: strings.overview.alertThrottle(item.throttleCount),
-        tone: "warning",
-      })
-    }
+    if (item.failureCount > 0) push("failure", strings.overview.alertFailure(item.failureCount), "danger")
+    if (item.throttleCount > 0) push("throttle", strings.overview.alertThrottle(item.throttleCount), "warning")
   }
   const order = { danger: 0, info: 1, warning: 2 }
   return rows.sort((a, b) => order[a.tone] - order[b.tone])
