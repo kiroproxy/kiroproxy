@@ -13,32 +13,64 @@ pub(crate) fn is_replace_blocked(e: &std::io::Error) -> bool {
     ) || matches!(e.raw_os_error(), Some(16) | Some(18))
 }
 
+/// 数据文件统一权限：仅当前用户可读写（凭据、API Key、用量等都可能含敏感信息）。
+#[cfg(unix)]
+pub(crate) const PRIVATE_FILE_MODE: u32 = 0o600;
+
+/// 截断打开（必要时创建）文件；Unix 上新建的文件直接带 0600（不受 umask 的 0644 影响）。
+///
+/// `tighten = true` 时对已存在的文件也尽力 fchmod 到 0600（临时文件用）；
+/// 原地写入的挂载点文件不改权限，保持原有语义。
+fn open_truncate(path: &std::path::Path, tighten: bool) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        options.mode(PRIVATE_FILE_MODE);
+        let file = options.open(path)?;
+        if tighten {
+            let _ = file.set_permissions(std::fs::Permissions::from_mode(PRIVATE_FILE_MODE));
+        }
+        Ok(file)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tighten;
+        options.open(path)
+    }
+}
+
 /// 原地写文件（截断后写入 + fsync）：保留 inode 与权限，可用于挂载点文件。
 /// 非原子——仅作为 rename 不可用时的兜底。
 pub(crate) fn write_in_place(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)?;
+    let mut file = open_truncate(path, false)?;
     file.write_all(bytes)?;
     file.sync_all()
 }
 
+/// 同进程内并发写同一目标时区分临时文件，避免两个写入者共用一个临时文件互相截断。
+static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// 原子写文件：写临时文件 → fsync → rename 替换 → fsync 父目录。
 /// 同目录 rename 在 POSIX 上是原子操作，避免写半截导致目标文件损坏。
+/// 临时文件以 0600 创建，rename 后目标文件同样是 0600。
 /// 目标为挂载点导致 rename 失败（EBUSY / EXDEV）时降级为原地写入。
-pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+pub fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    let seq = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("tmp.{}.{}", std::process::id(), seq));
 
     // 写临时文件并落盘
     {
-        let mut file = std::fs::File::create(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
+        let mut file = open_truncate(&tmp, true)?;
+        if let Err(e) = file.write_all(bytes).and_then(|_| file.sync_all()) {
+            drop(file);
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
     }
 
     // 原子替换目标文件
@@ -97,5 +129,61 @@ mod tests {
             assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode_before);
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    fn mode_of(path: &std::path::Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_creates_private_file_and_tightens_existing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = dir.path().join("fresh.json");
+        atomic_write(&fresh, b"[]").unwrap();
+        assert_eq!(mode_of(&fresh), 0o600);
+
+        // 旧版本写出的 0644 文件，重写后应收紧为 0600
+        let legacy = dir.path().join("legacy.json");
+        std::fs::write(&legacy, b"old").unwrap();
+        std::fs::set_permissions(&legacy, std::fs::Permissions::from_mode(0o644)).unwrap();
+        atomic_write(&legacy, b"new").unwrap();
+        assert_eq!(std::fs::read_to_string(&legacy).unwrap(), "new");
+        assert_eq!(mode_of(&legacy), 0o600);
+
+        // 不残留临时文件
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(leftovers.is_empty());
+    }
+
+    #[test]
+    fn atomic_write_concurrent_writers_do_not_corrupt_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = std::sync::Arc::new(dir.path().join("shared.json"));
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let body = format!("{{\"writer\":{i}}}");
+                    for _ in 0..20 {
+                        atomic_write(&path, body.as_bytes()).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        // 每次都是完整写入：最终内容必是某个写入者的完整 JSON
+        let content = std::fs::read_to_string(path.as_path()).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(value["writer"].as_u64().unwrap() < 8);
     }
 }

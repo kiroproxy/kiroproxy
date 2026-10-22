@@ -1002,6 +1002,11 @@ impl MultiTokenManager {
     fn persist_load_balancing_mode(&self, mode: &str) -> anyhow::Result<()> {
         use anyhow::Context;
 
+        // 嵌入桌面端时由外层 ConfigStore 负责写 config.json（见 disable_config_writes）
+        if !self.config_writes_enabled.load(Ordering::SeqCst) || self.is_retired() {
+            return Ok(());
+        }
+
         let config_path = match self.config.config_path() {
             Some(path) => path.to_path_buf(),
             None => {
@@ -1016,7 +1021,7 @@ impl MultiTokenManager {
             .with_context(|| format!("解析配置文件失败: {}", config_path.display()))?;
         json["loadBalancingMode"] = serde_json::Value::String(mode.to_string());
         let output = serde_json::to_string_pretty(&json)?;
-        std::fs::write(&config_path, output)
+        crate::common::fs::atomic_write(&config_path, output.as_bytes())
             .with_context(|| format!("持久化负载均衡模式失败: {}", config_path.display()))?;
 
         Ok(())

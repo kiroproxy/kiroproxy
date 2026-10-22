@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { tableFeatures, useTable, type ColumnDef } from "@tanstack/react-table"
-import { MoreHorizontalIcon } from "lucide-react"
+import { MoreHorizontalIcon, UsersIcon } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -22,19 +22,15 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { accountName, maskEmail } from "@/lib/account-status"
-import { fmtDateTime, fmtNumber } from "@/lib/format"
-import {
-  useAccountBalance,
-  useDeleteAccount,
-  useResetFailure,
-  useSetDisabled,
-  useSetPriority,
-} from "@/lib/queries"
+import { fmtDateTime } from "@/lib/format"
+import { useDeleteAccount, useResetFailure, useSetDisabled, useSetPriority } from "@/lib/queries"
 import { strings } from "@/lib/strings"
+import { cn } from "@/lib/utils"
 import type { CredentialStatusItem } from "@/lib/types"
-import { AccountQuotaBars } from "./AccountQuotaBars"
+import { AccountQuotaCell } from "./AccountQuotaBars"
 import { AccountStatusBadge } from "./AccountStatusBadge"
 
 const features = tableFeatures({})
@@ -48,31 +44,15 @@ function AccountCell({ item }: { item: CredentialStatusItem }) {
         <AvatarFallback>{name.slice(0, 1).toUpperCase()}</AvatarFallback>
       </Avatar>
       <div className="min-w-0">
-        <Link
-          to={`/accounts/${item.id}`}
-          className="block truncate font-medium hover:underline"
-        >
+        <Link to={`/accounts/${item.id}`} className="block truncate font-medium hover:underline">
           {name}
         </Link>
-        {email ? (
+        {email && email !== name ? (
           <span className="block truncate text-[11.5px] text-muted-foreground">{email}</span>
         ) : null}
       </div>
     </div>
   )
-}
-
-function BalanceCell({ id }: { id: number }) {
-  const balance = useAccountBalance(id)
-
-  if (balance.isLoading) {
-    return <span className="num text-muted-foreground">…</span>
-  }
-  // 后端对不支持的账号返回 0 限额，此时没有可展示的余额。
-  if (!balance.data || balance.data.usageLimit <= 0) {
-    return <span className="num text-muted-foreground">—</span>
-  }
-  return <span className="num">{fmtNumber(Math.round(balance.data.remaining))}</span>
 }
 
 function AccountRowMenu({ item }: { item: CredentialStatusItem }) {
@@ -87,17 +67,15 @@ function AccountRowMenu({ item }: { item: CredentialStatusItem }) {
     <>
       <DropdownMenu>
         <DropdownMenuTrigger
-          render={<Button variant="ghost" size="icon" aria-label={strings.common.actions} />}
+          render={<Button variant="icon" size="icon" aria-label={strings.common.actions} />}
         >
           <MoreHorizontalIcon />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem onClick={() => navigate(`/accounts/${item.id}`)}>
-            {strings.accounts.edit}
+            {strings.accounts.details}
           </DropdownMenuItem>
-          <DropdownMenuItem
-            onClick={() => setPriority.mutate({ id: item.id, priority: 0 })}
-          >
+          <DropdownMenuItem onClick={() => setPriority.mutate({ id: item.id, priority: 0 })}>
             {strings.accounts.pin}
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => resetFailure.mutate(item.id)}>
@@ -119,15 +97,16 @@ function AccountRowMenu({ item }: { item: CredentialStatusItem }) {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{strings.accounts.delete}</AlertDialogTitle>
-            <AlertDialogDescription>{strings.accounts.deleteConfirm}</AlertDialogDescription>
+            <AlertDialogDescription>
+              {accountName(item)} · {strings.accounts.deleteConfirm}
+            </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{strings.common.cancel}</AlertDialogCancel>
             <AlertDialogAction
               variant="danger"
-              onClick={() =>
-                deleteAccount.mutate(item.id, { onSuccess: () => setConfirmOpen(false) })
-              }
+              disabled={deleteAccount.isPending}
+              onClick={() => deleteAccount.mutate(item.id, { onSuccess: () => setConfirmOpen(false) })}
             >
               {strings.common.delete}
             </AlertDialogAction>
@@ -157,12 +136,7 @@ const baseColumns: ColumnDef<typeof features, CredentialStatusItem>[] = [
   {
     id: "quota",
     header: strings.accounts.columns.quota,
-    cell: ({ row }) => <AccountQuotaBars item={row.original} />,
-  },
-  {
-    id: "balance",
-    header: strings.accounts.columns.balance,
-    cell: ({ row }) => <BalanceCell id={row.original.id} />,
+    cell: ({ row }) => <AccountQuotaCell id={row.original.id} enabled={!row.original.disabled} />,
   },
   {
     id: "lastUsedAt",
@@ -173,7 +147,7 @@ const baseColumns: ColumnDef<typeof features, CredentialStatusItem>[] = [
   },
   {
     id: "actions",
-    header: "",
+    header: () => <span className="sr-only">{strings.accounts.columns.actions}</span>,
     cell: ({ row }) => <AccountRowMenu item={row.original} />,
   },
 ]
@@ -184,6 +158,7 @@ export interface AccountTableProps {
   onToggleSelected?: (id: number) => void
   onToggleAll?: (ids: number[]) => void
   emptyMessage?: string
+  emptyHint?: string
 }
 
 export function AccountTable({
@@ -192,6 +167,7 @@ export function AccountTable({
   onToggleSelected,
   onToggleAll,
   emptyMessage = strings.accounts.empty,
+  emptyHint,
 }: AccountTableProps) {
   const selectable = selectedIds !== undefined && onToggleSelected !== undefined
 
@@ -217,13 +193,25 @@ export function AccountTable({
     return [selectionColumn, ...baseColumns]
   }, [accounts, onToggleAll, onToggleSelected, selectable, selectedIds])
 
-  const table = useTable({ features, columns, data: accounts })
+  // 行 id 绑定账号 id，列表重排时行内状态（如已打开的删除确认）不会串到别的账号。
+  const table = useTable({
+    features,
+    columns,
+    data: accounts,
+    getRowId: (row) => String(row.id),
+  })
 
   if (accounts.length === 0) {
     return (
-      <div className="rounded-[16px] border border-border bg-card p-10 text-center text-[12.5px] text-muted-foreground">
-        {emptyMessage}
-      </div>
+      <Empty>
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <UsersIcon />
+          </EmptyMedia>
+          <EmptyTitle>{emptyMessage}</EmptyTitle>
+          {emptyHint ? <EmptyDescription>{emptyHint}</EmptyDescription> : null}
+        </EmptyHeader>
+      </Empty>
     )
   }
 
@@ -232,9 +220,15 @@ export function AccountTable({
       <Table>
         <TableHeader>
           {table.getHeaderGroups().map((group) => (
-            <TableRow key={group.id}>
+            <TableRow key={group.id} className="h-10 hover:bg-transparent">
               {group.headers.map((header) => (
-                <TableHead key={header.id}>
+                <TableHead
+                  key={header.id}
+                  className={cn(
+                    "text-[12px] text-muted-foreground",
+                    header.column.id === "actions" && "w-10",
+                  )}
+                >
                   {header.isPlaceholder ? null : <table.FlexRender header={header} />}
                 </TableHead>
               ))}
@@ -246,6 +240,7 @@ export function AccountTable({
             <TableRow
               key={row.id}
               data-state={selectedIds?.has(row.original.id) ? "selected" : undefined}
+              className={cn(row.original.disabled && "text-muted-foreground")}
             >
               {row.getAllCells().map((cell) => (
                 <TableCell key={cell.id}>

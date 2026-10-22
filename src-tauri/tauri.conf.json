@@ -20,15 +20,36 @@
         "center": true,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "trafficLightPosition": { "x": 14, "y": 22 },
+        "trafficLightPosition": {
+          "x": 14,
+          "y": 22
+        },
         "dragDropEnabled": true
       }
     ],
-    "security": { "csp": null }
+    "security": {
+      "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'",
+      "devCsp": null
+    }
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "createUpdaterArtifacts": false
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZGMjZFMjM4MTlGRjBEOEEKUldTS0RmOFpPT0ltLy95SGxub1JrTkJ4YlJFcy9jUGYrU3IxZjhZMm8xUW9tWmN4cXpmL09nQzkK",
+      "endpoints": [
+        "https://github.com/kiroproxy/kiroproxy/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

@@ -4,22 +4,16 @@ import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { strings } from "@/lib/strings"
 
-const steps = [
-  { title: "导出 KAM 账号", detail: "在 Kiro Account Manager 中导出 JSON" },
-  { title: "导入本应用", detail: "粘贴 JSON，或手动填写 refreshToken" },
-  { title: "配置代理", detail: "国内网络需填写上游 HTTP/SOCKS5 代理" },
-]
-
 export function OnboardingCard() {
   return (
     <Card className="relative gap-4 overflow-hidden rounded-[22px] border-dashed p-5">
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute -right-16 -top-20 size-52 rounded-full bg-[radial-gradient(circle_at_30%_20%,var(--orb-start),var(--orb-end))] opacity-10 blur-2xl"
+        className="pointer-events-none absolute -top-20 -right-16 size-52 rounded-full bg-[radial-gradient(circle_at_30%_20%,var(--orb-start),var(--orb-end))] opacity-10 blur-2xl"
       />
-      <div className="relative flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[.08em] text-faint">
-        <SparklesIcon className="size-3.5" />
-        快速开始
+      <div className="relative flex items-center gap-2 text-[11.5px] font-semibold text-muted-foreground">
+        <SparklesIcon className="size-3.5" aria-hidden="true" />
+        {strings.onboarding.quickStart}
       </div>
       <div className="relative">
         <h2 className="font-serif text-[21px] leading-tight font-semibold">
@@ -31,24 +25,24 @@ export function OnboardingCard() {
       </div>
 
       <ol className="relative flex flex-col gap-2.5">
-        {steps.map((step, index) => (
+        {strings.onboarding.steps.map((step, index) => (
           <li key={step.title} className="flex items-start gap-2.5">
-            <span className="num mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-quota-soft text-[10.5px] font-bold text-text-quota">
+            <span className="num mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-quota-soft text-[11px] font-bold text-text-quota">
               {index + 1}
             </span>
             <div className="min-w-0">
               <div className="text-[12.5px] font-semibold">{step.title}</div>
-              <div className="text-[11px] leading-4 text-muted-foreground">{step.detail}</div>
+              <div className="text-[11.5px] leading-4 text-muted-foreground">{step.detail}</div>
             </div>
           </li>
         ))}
       </ol>
 
       <div className="relative flex flex-wrap items-center gap-2">
-        <Button nativeButton={false} render={<Link to="/accounts" />}>
+        <Button nativeButton={false} render={<Link to="/accounts?add=kam" />}>
           {strings.onboarding.importKam}
         </Button>
-        <Button nativeButton={false} variant="secondary" render={<Link to="/accounts" />}>
+        <Button nativeButton={false} variant="secondary" render={<Link to="/accounts?add=manual" />}>
           {strings.onboarding.manualAdd}
         </Button>
       </div>
@@ -57,7 +51,7 @@ export function OnboardingCard() {
         className="relative inline-flex w-fit items-center gap-1 text-[12px] font-medium text-primary hover:underline"
       >
         {strings.onboarding.viewConnect}
-        <ArrowRightIcon className="size-3" />
+        <ArrowRightIcon className="size-3" aria-hidden="true" />
       </Link>
     </Card>
   )

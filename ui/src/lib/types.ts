@@ -1,7 +1,8 @@
 // 与 Rust IPC 返回值对应的前端类型。
 // 只声明 UI 使用的字段；后端多返回的字段会被忽略。
 
-export interface IpcError {
+/** Rust 端 IpcError 序列化后的形状。 */
+export interface IpcErrorShape {
   code: string
   message: string
 }
@@ -87,7 +88,10 @@ export interface AddCredentialRequest {
   proxyPassword?: string | null
 }
 
-export type UpdateCredentialRequest = Partial<AddCredentialRequest> & {
+/** 字段缺省表示不修改，空字符串表示清除；优先级与停用状态走单独的命令。 */
+export type UpdateCredentialRequest = Partial<
+  Omit<AddCredentialRequest, "priority" | "disabled" | "region" | "tokenEndpoint" | "scopes">
+> & {
   thinkingAdaptive?: boolean
 }
 
@@ -198,7 +202,33 @@ export interface DailySummary {
   totalCredits: number
   totalCreditsSaved: number
   totalInputTokens: number
+  totalOutputTokens: number
   totalCacheReadTokens: number
+}
+
+export interface ModelBreakdown {
+  model: string
+  requests: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cost: number
+  credits: number
+}
+
+export interface DayModelBreakdown {
+  date: string
+  model: string
+  requests: number
+  inputTokens: number
+  outputTokens: number
+  cost: number
+  credits: number
+}
+
+export interface UsageBreakdown {
+  byModel: ModelBreakdown[]
+  byDayModel: DayModelBreakdown[]
 }
 
 export interface CredentialDaySummary extends DailySummary {
@@ -252,6 +282,8 @@ export interface RpmSnapshot {
 }
 
 export interface LogEntry {
+  /** 进程内单调递增的序号，用作列表 key。 */
+  seq: number
   timestamp: string
   level: string
   target: string
@@ -338,10 +370,62 @@ export interface RuntimeConfigPatch {
   apiRegion?: string | null
 }
 
-export interface AdminModelItem {
+export type OauthPhase = "idle" | "waiting" | "verifying" | "success" | "failed" | "cancelled"
+
+export interface OauthStatus {
+  phase: OauthPhase
+  /** "Google" / "Github" */
+  provider?: string | null
+  userCode?: string | null
+  verificationUrl?: string | null
+  message?: string | null
+  credentialId?: number | null
+}
+
+export type UpdatePhase =
+  | "idle"
+  | "checking"
+  | "downloading"
+  | "ready"
+  | "installing"
+  | "failed"
+
+export interface UpdateStatus {
+  phase: UpdatePhase
+  currentVersion: string
+  latestVersion?: string | null
+  notes?: string | null
+  publishedAt?: number | null
+  progress?: number | null
+  downloadedBytes?: number | null
+  totalBytes?: number | null
+  error?: string | null
+  /** 有值时无法原地替换（DMG / 隔离路径 / debug 构建），只能手动下载安装 */
+  installBlocked?: string | null
+  lastCheckedAt?: number | null
+}
+
+export interface ModelView {
   id: string
-  displayName?: string
+  displayName: string
   type: string
+  ownedBy: string
+  maxTokens: number
   rateMultiplier?: number | null
   releasedAt?: string | null
+}
+
+export interface TestConnectionRequest {
+  /** undefined 表示沿用已保存的配置，空字符串表示不使用。 */
+  proxyUrl?: string
+  proxyUsername?: string
+  proxyPassword?: string
+}
+
+export interface TestConnectionResult {
+  ok: boolean
+  latencyMs: number
+  status?: number | null
+  target: string
+  message: string
 }

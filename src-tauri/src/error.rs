@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Harllan He. Licensed under MIT.
+// Copyright (c) 2026 pigcursor. Licensed under MIT.
 
 use serde::Serialize;
 use std::fmt;

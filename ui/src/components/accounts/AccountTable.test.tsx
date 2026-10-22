@@ -4,7 +4,14 @@ import type { CredentialStatusItem } from "@/lib/types"
 import { AccountTable } from "./AccountTable"
 
 vi.mock("@/lib/queries", () => ({
-  useAccountBalance: () => ({ data: undefined, isLoading: false }),
+  useAccountBalance: (id: number) => ({
+    data:
+      id === 3
+        ? { id, currentUsage: 950, usageLimit: 1000, remaining: 50, usagePercentage: 95, nextResetAt: null }
+        : { id, currentUsage: 413, usageLimit: 1000, remaining: 587, usagePercentage: 41.3, nextResetAt: null },
+    isLoading: false,
+    isError: false,
+  }),
   useDeleteAccount: () => ({ mutate: vi.fn() }),
   useResetFailure: () => ({ mutate: vi.fn() }),
   useSetDisabled: () => ({ mutate: vi.fn() }),
@@ -36,9 +43,7 @@ const baseAccount: CredentialStatusItem = {
   disabledReason: null,
 }
 
-const accountA: CredentialStatusItem = baseAccount
-
-const accountB: CredentialStatusItem = {
+const unstable: CredentialStatusItem = {
   ...baseAccount,
   id: 2,
   priority: 1,
@@ -48,13 +53,25 @@ const accountB: CredentialStatusItem = {
   healthStatus: "degraded",
 }
 
-it("renders account rows and status pills", () => {
+const nearlyEmpty: CredentialStatusItem = {
+  ...baseAccount,
+  id: 3,
+  priority: 2,
+  isCurrent: false,
+  email: "third@example.com",
+  nickname: "第三账号",
+}
+
+it("derives status pills from health and monthly quota", () => {
   render(
     <MemoryRouter>
-      <AccountTable accounts={[accountA, accountB]} />
+      <AccountTable accounts={[baseAccount, unstable, nearlyEmpty]} />
     </MemoryRouter>,
   )
   expect(screen.getByText("主账号")).toBeInTheDocument()
   expect(screen.getByText("可用")).toBeInTheDocument()
+  // degraded 表示连续失败或限流，与额度无关。
+  expect(screen.getByText("不稳定")).toBeInTheDocument()
   expect(screen.getByText("额度将尽")).toBeInTheDocument()
+  expect(screen.getAllByText("413 / 1,000").length).toBeGreaterThan(0)
 })

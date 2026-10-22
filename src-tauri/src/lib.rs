@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Harllan He. Licensed under MIT.
+// Copyright (c) 2026 pigcursor. Licensed under MIT.
 
 mod commands;
 mod error;
@@ -6,24 +6,41 @@ mod events;
 mod services;
 mod state;
 
-use crate::error::IpcError;
-use crate::state::AppState;
+use crate::state::{AppState, startup_error};
 use kiro_core::paths::AppPaths;
+use std::time::Duration;
+
+/// 退出时等待代理服务优雅关闭的上限（在途请求超时后不再等待）
+const EXIT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             use tauri::Manager;
-            let root = app.path().app_data_dir()?;
+            // KIROPROXY_DATA_DIR：隔离的开发/测试数据目录，不影响正在使用的正式数据
+            let root = match state::data_dir_override() {
+                Some(dir) => dir,
+                None => app.path().app_data_dir()?,
+            };
             let paths = AppPaths::new(root)?;
             let state = match AppState::try_new(paths.clone()) {
                 Ok(state) => state,
-                Err(e) => AppState::failed(paths, IpcError::internal(e)),
+                Err(e) => {
+                    let error = startup_error(&e);
+                    eprintln!("KiroProxy 启动失败: {error}");
+                    AppState::failed(paths, error)
+                }
             };
             app.manage(state);
+            app.manage(services::updater::UpdateState::new(
+                app.package_info().version.to_string(),
+            ));
+            app.manage(services::oauth::OauthState::default());
             events::spawn_log_forwarder(app.handle().clone());
+            services::updater::spawn_scheduler(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -36,7 +53,6 @@ pub fn run() {
             commands::app::restart_proxy_server,
             commands::app::open_data_dir,
             commands::app::open_file,
-            commands::app::read_text_file,
             commands::app::clear_logs,
             commands::app::quit_app,
             // 账号
@@ -54,6 +70,10 @@ pub fn run() {
             commands::accounts::cancel_verify_accounts,
             commands::kiro_ide::scan_kiro_ide,
             commands::kiro_ide::import_kiro_ide,
+            commands::oauth::get_oauth_status,
+            commands::oauth::start_browser_login,
+            commands::oauth::cancel_browser_login,
+            commands::oauth::reopen_login_page,
             // 设置
             commands::settings::get_settings,
             commands::settings::set_load_balancing_mode,
@@ -68,6 +88,7 @@ pub fn run() {
             commands::settings::set_dump_kiro_body,
             commands::settings::set_write_chunking_max_lines,
             commands::settings::set_runtime_config,
+            commands::settings::test_connection,
             // 日志
             commands::logs::get_log_snapshot,
             commands::logs::get_throttle_logs,
@@ -80,9 +101,15 @@ pub fn run() {
             commands::usage::get_daily_usage,
             commands::usage::get_daily_usage_records,
             commands::usage::get_usage_records,
+            commands::usage::get_usage_breakdown,
             commands::usage::get_credential_usage_records,
             commands::usage::get_credential_today_summary,
             commands::usage::get_rpm,
+            // 软件更新
+            commands::updater::get_update_status,
+            commands::updater::check_for_update,
+            commands::updater::install_update,
+            commands::updater::open_update_page,
             // API Key
             commands::api_keys::list_api_keys,
             commands::api_keys::get_api_key_secret,
@@ -94,6 +121,27 @@ pub fn run() {
             commands::api_keys::get_api_key_usage_records,
             commands::api_keys::reset_api_key_usage,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running KiroProxy");
+        .build(tauri::generate_context!())
+        .expect("error while building KiroProxy");
+
+    app.run(|handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            prepare_exit(handle);
+        }
+    });
+}
+
+/// 退出清理：停止代理服务（等待在途请求最多 3 秒），再把所有防抖/周期写入的数据落盘。
+/// 退出、以及安装更新后重启之前都会调用，重复调用是幂等的。
+pub(crate) fn prepare_exit(handle: &tauri::AppHandle) {
+    use tauri::Manager;
+    let Some(state) = handle.try_state::<AppState>() else {
+        return;
+    };
+    let Ok(core) = state.core() else {
+        return;
+    };
+    services::server::shutdown_blocking(&core, EXIT_SHUTDOWN_TIMEOUT);
+    core.flush_all();
+    tracing::info!("KiroProxy 已退出，数据已落盘");
 }

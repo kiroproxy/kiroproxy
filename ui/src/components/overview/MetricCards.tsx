@@ -1,22 +1,67 @@
 import { ActivityIcon, CoinsIcon, CpuIcon, GaugeIcon } from "lucide-react"
 import { Card } from "@/components/ui/card"
-import { fmtNumber } from "@/lib/format"
+import { fmtCredits, fmtNumber } from "@/lib/format"
 import { strings } from "@/lib/strings"
 import { cn } from "@/lib/utils"
 
-export interface MetricCardsProps {
+export interface MetricValues {
   requests: number
   tokens: number
   credits: number
+}
+
+export interface MetricCardsProps {
+  today: MetricValues
+  /** 昨日数据；没有记录时为 undefined，不显示对比。 */
+  yesterday?: MetricValues
   rpm: number
 }
 
-export function MetricCards({ requests, tokens, credits, rpm }: MetricCardsProps) {
+function Delta({ current, previous }: { current: number; previous?: number }) {
+  if (previous === undefined || previous === 0) {
+    return (
+      <span>
+        {previous === 0 && current === 0
+          ? strings.overview.vsYesterday(strings.overview.flat)
+          : strings.overview.noYesterday}
+      </span>
+    )
+  }
+  const rounded = Math.round(((current - previous) / previous) * 100)
+  const text = rounded === 0 ? strings.overview.flat : `${rounded > 0 ? "+" : ""}${rounded}%`
+  return (
+    <span className={cn(rounded > 0 && "text-text-success")}>
+      {strings.overview.vsYesterday(text)}
+    </span>
+  )
+}
+
+export function MetricCards({ today, yesterday, rpm }: MetricCardsProps) {
   const metrics = [
-    { label: strings.overview.requestsToday, value: fmtNumber(requests), icon: ActivityIcon, hint: "今日" },
-    { label: strings.overview.tokensToday, value: fmtNumber(tokens), icon: CpuIcon, hint: "输入 Token" },
-    { label: strings.overview.creditsToday, value: credits.toFixed(2), icon: CoinsIcon, hint: "Kiro Credits" },
-    { label: strings.overview.currentRpm, value: fmtNumber(rpm), icon: GaugeIcon, hint: "最近一分钟" },
+    {
+      label: strings.overview.requestsToday,
+      value: fmtNumber(today.requests),
+      icon: ActivityIcon,
+      foot: <Delta current={today.requests} previous={yesterday?.requests} />,
+    },
+    {
+      label: strings.overview.tokensToday,
+      value: fmtNumber(today.tokens),
+      icon: CpuIcon,
+      foot: <Delta current={today.tokens} previous={yesterday?.tokens} />,
+    },
+    {
+      label: strings.overview.creditsToday,
+      value: fmtCredits(today.credits),
+      icon: CoinsIcon,
+      foot: <Delta current={today.credits} previous={yesterday?.credits} />,
+    },
+    {
+      label: strings.overview.currentRpm,
+      value: fmtNumber(rpm),
+      icon: GaugeIcon,
+      foot: <span>{strings.overview.metricHintRpm}</span>,
+    },
   ]
 
   return (
@@ -27,20 +72,20 @@ export function MetricCards({ requests, tokens, credits, rpm }: MetricCardsProps
           <div
             key={metric.label}
             className={cn(
-              "flex flex-col gap-2 p-4",
+              "flex min-w-0 flex-col gap-1.5 p-4",
               index % 2 === 1 && "border-l border-border",
               index >= 2 && "border-t border-border md:border-t-0",
               index > 0 && "md:border-l md:border-border",
             )}
           >
             <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
-              <Icon className="size-3.5" />
+              <Icon className="size-3.5" aria-hidden="true" />
               {metric.label}
             </div>
-            <div className="flex items-baseline justify-between gap-2">
-              <span className="num text-[26px] leading-none font-bold">{metric.value}</span>
-              <span className="text-[10.5px] text-faint">{metric.hint}</span>
-            </div>
+            <span className="num truncate text-[23px] leading-tight font-semibold tracking-[-0.01em]">
+              {metric.value}
+            </span>
+            <span className="truncate text-[11px] text-muted-foreground">{metric.foot}</span>
           </div>
         )
       })}

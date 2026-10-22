@@ -135,6 +135,12 @@ pub struct MultiTokenManager {
     pub(crate) model_support: Mutex<HashMap<u64, ModelSupport>>,
     /// 串行化模型可用性探测，避免并发请求对同一批账号重复探测
     pub(crate) model_support_refresh_lock: TokioMutex<()>,
+    /// 已退役（代理运行时被重建替换）：在途请求仍可使用本实例完成，但不再写
+    /// credentials.json / kiro_stats.json，避免与接替它的新实例并发覆盖磁盘状态
+    pub(crate) retired: AtomicBool,
+    /// 负载均衡模式变更是否由本实例写回 config.json。
+    /// 嵌入桌面端时 config.json 由外层 ConfigStore 统一写入，此处关闭，避免两个写入方互相覆盖
+    pub(crate) config_writes_enabled: AtomicBool,
 }
 
 /// 单个账号的模型可用性探测结果

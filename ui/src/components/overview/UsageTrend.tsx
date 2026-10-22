@@ -1,41 +1,46 @@
+import { lazy, Suspense } from "react"
 import { Link } from "react-router-dom"
-import { Card, CardTitle } from "@/components/ui/card"
-import { UsageAreaChart } from "@/components/charts/UsageAreaChart"
+import { ChartLineIcon } from "lucide-react"
+import { Card, CardDescription, CardTitle } from "@/components/ui/card"
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
+import { Skeleton } from "@/components/ui/skeleton"
 import { strings } from "@/lib/strings"
+import { lastSevenDays } from "@/lib/usage"
+
+// 图表依赖（recharts 及其 d3 / redux 依赖）约 1MB 源码，单独拆包，概览首屏不必等它。
+const UsageAreaChart = lazy(() => import("@/components/charts/UsageAreaChart"))
 import type { DailySummary } from "@/lib/types"
 
-export interface UsageTrendProps {
-  daily: DailySummary[]
-}
-
-export function UsageTrend({ daily }: UsageTrendProps) {
-  const points = daily.slice(-7).map((day) => ({
-    date: day.date.slice(5),
-    input: day.totalInputTokens,
-    output: day.totalCacheReadTokens,
-  }))
+export function UsageTrend({ daily }: { daily: DailySummary[] }) {
+  const points = lastSevenDays(daily)
+  const empty = points.every((point) => point.input === null)
 
   return (
-    <Card className="gap-3 p-5">
+    <Card className="h-full gap-3 p-5">
       <div className="flex items-start justify-between gap-3">
         <div>
           <CardTitle>{strings.overview.usageTrend}</CardTitle>
-          <p className="mt-1 text-[11.5px] text-muted-foreground">最近 7 天的输入与缓存读取</p>
+          <CardDescription className="mt-1">{strings.overview.trendHint}</CardDescription>
         </div>
-        <Link to="/usage" className="text-[11.5px] font-medium text-primary hover:underline">
-          查看用量
+        <Link to="/usage" className="text-[12px] font-medium text-primary hover:underline">
+          {strings.overview.viewUsage}
         </Link>
       </div>
 
-      {points.length === 0 ? (
-        <div className="flex h-[190px] flex-col items-center justify-center gap-1.5 rounded-[12px] border border-dashed border-border bg-subtle/40">
-          <span className="text-[13px] font-medium text-muted-foreground">还没有用量记录</span>
-          <span className="text-[11.5px] text-faint">
-            接入 Claude Code 后，这里会出现每日趋势
-          </span>
-        </div>
+      {empty ? (
+        <Empty className="min-h-[220px] bg-subtle/40">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <ChartLineIcon />
+            </EmptyMedia>
+            <EmptyTitle>{strings.overview.noUsage}</EmptyTitle>
+            <EmptyDescription>{strings.overview.noUsageHint}</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       ) : (
-        <UsageAreaChart data={points} />
+        <Suspense fallback={<Skeleton className="min-h-[220px] w-full flex-1" />}>
+          <UsageAreaChart data={points} className="aspect-auto min-h-[220px] w-full flex-1" />
+        </Suspense>
       )}
     </Card>
   )

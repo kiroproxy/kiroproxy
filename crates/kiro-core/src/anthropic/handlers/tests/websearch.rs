@@ -61,7 +61,7 @@ mod tests {
             MultiTokenManager::new(Config::default(), vec![cred], None, None, false)
                 .expect("构造 MultiTokenManager 失败"),
         );
-        crate::kiro::provider::KiroProvider::new(manager)
+        crate::kiro::provider::KiroProvider::new(manager).unwrap()
     }
 
     #[tokio::test]

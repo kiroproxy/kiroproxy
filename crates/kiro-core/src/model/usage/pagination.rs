@@ -161,6 +161,137 @@ pub struct UsageRecordItem {
     pub user_agent: Option<String>,
 }
 
+/// 组合过滤条件（各字段为 None 表示不按该维度过滤）
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UsageRecordFilter<'a> {
+    pub api_key_id: Option<u32>,
+    pub credential_id: Option<u64>,
+    /// 模型名精确匹配
+    pub model: Option<&'a str>,
+    /// CST（UTC+8）日期闭区间 `(from, to)`，`YYYY-MM-DD`
+    pub date_range: Option<(&'a str, &'a str)>,
+}
+
+impl UsageRecordFilter<'_> {
+    fn matches(&self, record: &UsageRecord) -> bool {
+        if self.api_key_id.is_some_and(|id| record.api_key_id != id) {
+            return false;
+        }
+        if self
+            .credential_id
+            .is_some_and(|id| record.credential_id != Some(id))
+        {
+            return false;
+        }
+        if self.model.is_some_and(|m| record.model != m) {
+            return false;
+        }
+        if let Some((from, to)) = self.date_range {
+            let cst = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+            let d = record
+                .created_at
+                .with_timezone(&cst)
+                .format("%Y-%m-%d")
+                .to_string();
+            if d.as_str() < from || d.as_str() > to {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// 区间查询的截断上限：与 `get_records_paged_by_date_range` 一致
+const MAX_FILTERED_RANGE_TOTAL: usize = 10_000;
+
+fn to_item(r: UsageRecord, credential_labels: &HashMap<u64, String>) -> UsageRecordItem {
+    let credential_label = r
+        .credential_id
+        .and_then(|cid| credential_labels.get(&cid).cloned());
+    let credits_saved = r
+        .credits_used
+        .map(|cu| r.estimated_cost * get_k_ref(&r.model) - cu);
+    UsageRecordItem {
+        model: r.model,
+        input_tokens: r.input_tokens,
+        output_tokens: r.output_tokens,
+        estimated_cost: r.estimated_cost,
+        credits_used: r.credits_used,
+        credits_saved,
+        cache_read_input_tokens: r.cache_read_input_tokens,
+        cache_creation_input_tokens: r.cache_creation_input_tokens,
+        created_at: r.created_at,
+        credential_id: r.credential_id,
+        credential_label,
+        client_ip: r.client_ip,
+        effort: r.effort,
+        first_token_ms: r.first_token_ms,
+        duration_ms: r.duration_ms,
+        thinking_token_count: r.thinking_token_count,
+        is_stream: r.is_stream,
+        user_agent: r.user_agent,
+    }
+}
+
+impl UsageTracker {
+    /// 按组合条件分页查询原始记录（按 created_at 降序）
+    ///
+    /// 一次遍历完成全部过滤，只克隆命中的记录。带日期区间时与区间查询口径一致：
+    /// page_size 钳制到 [1, 500]，降序保留最新 10000 条后再分页。
+    pub fn get_records_paged_filtered(
+        &self,
+        filter: &UsageRecordFilter<'_>,
+        page: usize,
+        page_size: usize,
+        credential_labels: &HashMap<u64, String>,
+    ) -> UsageRecordsPage {
+        let (page_size, max_total) = if filter.date_range.is_some() {
+            (page_size.clamp(1, 500), MAX_FILTERED_RANGE_TOTAL)
+        } else {
+            (page_size.max(1), usize::MAX)
+        };
+
+        let mut matched: Vec<UsageRecord> = {
+            let records = self.records.read();
+            records
+                .iter()
+                .filter(|r| filter.matches(r))
+                .cloned()
+                .collect()
+        };
+        matched.sort_by_key(|r| std::cmp::Reverse(r.created_at));
+        matched.truncate(max_total);
+
+        let total = matched.len();
+        if total == 0 {
+            return UsageRecordsPage {
+                records: vec![],
+                total: 0,
+                page: 1,
+                page_size,
+                total_pages: 0,
+            };
+        }
+        let total_pages = total.div_ceil(page_size);
+        let page = page.max(1).min(total_pages);
+        let start = (page - 1) * page_size;
+        let records = matched
+            .into_iter()
+            .skip(start)
+            .take(page_size)
+            .map(|r| to_item(r, credential_labels))
+            .collect();
+
+        UsageRecordsPage {
+            records,
+            total,
+            page,
+            page_size,
+            total_pages,
+        }
+    }
+}
+
 impl UsageTracker {
     /// 分页查询指定账号的原始请求记录（按 created_at 降序）
     pub fn get_records_paged_by_credential(

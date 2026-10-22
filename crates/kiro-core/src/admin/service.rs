@@ -214,8 +214,17 @@ impl AdminService {
 
     /// 获取账号余额（带缓存）
     pub async fn get_balance(&self, id: u64) -> Result<BalanceResponse, AdminServiceError> {
+        self.get_balance_with(id, false).await
+    }
+
+    /// 获取账号余额；`force = true` 时跳过 5 分钟缓存直接查询上游，成功后刷新缓存
+    pub async fn get_balance_with(
+        &self,
+        id: u64,
+        force: bool,
+    ) -> Result<BalanceResponse, AdminServiceError> {
         // 先查缓存
-        {
+        if !force {
             let cache = self.balance_cache.lock();
             if let Some(cached) = cache.get(&id) {
                 let now = Utc::now().timestamp() as f64;
@@ -539,6 +548,10 @@ impl AdminService {
             Some(p) => p,
             None => return,
         };
+        // 已退役的运行时不再写盘（新运行时有自己的 AdminService 与缓存）
+        if self.token_manager.is_retired() {
+            return;
+        }
 
         // 持有锁期间完成序列化和写入，防止并发损坏
         let cache = self.balance_cache.lock();
@@ -547,7 +560,7 @@ impl AdminService {
 
         match serde_json::to_string_pretty(&map) {
             Ok(json) => {
-                if let Err(e) = std::fs::write(path, json) {
+                if let Err(e) = crate::common::fs::atomic_write(path, json.as_bytes()) {
                     tracing::warn!("保存余额缓存失败: {}", e);
                 }
             }

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react"
-import { ArrowUpDownIcon, ListChecksIcon, PlusIcon, SearchIcon } from "lucide-react"
+import { ArrowUpDownIcon, ListChecksIcon, SearchIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -11,7 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { accountStatusFilters, type AccountStatusFilter } from "@/lib/account-status"
 import { strings } from "@/lib/strings"
 
@@ -21,15 +21,16 @@ const filterLabels: Record<AccountStatusFilter, string> = {
   all: strings.accounts.filterAll,
   available: strings.accounts.filterAvailable,
   lowQuota: strings.accounts.filterLow,
+  unstable: strings.accounts.filterUnstable,
   exhausted: strings.accounts.filterExhausted,
   needsLogin: strings.accounts.filterNeedsLogin,
   disabled: strings.accounts.filterDisabled,
 }
 
 const sortOptions: { value: AccountSort; label: string }[] = [
-  { value: "account", label: strings.accounts.sortByAccount },
-  { value: "remaining", label: strings.accounts.sortByRemaining },
   { value: "priority", label: strings.accounts.sortByPriority },
+  { value: "remaining", label: strings.accounts.sortByRemaining },
+  { value: "account", label: strings.accounts.sortByAccount },
 ]
 
 const sortLabel = (sort: AccountSort) =>
@@ -40,13 +41,14 @@ export interface AccountToolbarProps {
   onSearchChange: (value: string) => void
   statusFilter: AccountStatusFilter
   onStatusFilterChange: (value: AccountStatusFilter) => void
+  /** 每个筛选项的数量；为 0 的项（除全部外）不显示。 */
+  counts: Record<AccountStatusFilter, number>
   sort: AccountSort
   onSortChange: (value: AccountSort) => void
   selectedCount: number
   onVerify: () => void
   onRestore: () => void
   onDelete: () => void
-  onAdd: () => void
 }
 
 export function AccountToolbar({
@@ -54,13 +56,13 @@ export function AccountToolbar({
   onSearchChange,
   statusFilter,
   onStatusFilterChange,
+  counts,
   sort,
   onSortChange,
   selectedCount,
   onVerify,
   onRestore,
   onDelete,
-  onAdd,
 }: AccountToolbarProps) {
   const searchRef = useRef<HTMLInputElement>(null)
 
@@ -75,32 +77,45 @@ export function AccountToolbar({
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [])
 
+  const visibleFilters = accountStatusFilters.filter(
+    (filter) => filter === "all" || filter === statusFilter || counts[filter] > 0,
+  )
+
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2 pb-3">
       <div className="relative">
-        <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-faint" />
+        <SearchIcon
+          className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-faint"
+          aria-hidden="true"
+        />
         <Input
           ref={searchRef}
           value={search}
           onChange={(event) => onSearchChange(event.target.value)}
           placeholder={strings.accounts.searchPlaceholder}
           aria-label={strings.common.search}
-          className="w-52 pl-8"
+          className="w-52 rounded-full pr-10 pl-8"
         />
+        <kbd className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 font-mono text-[10.5px] text-faint">
+          ⌘K
+        </kbd>
       </div>
 
-      <Tabs
-        value={statusFilter}
-        onValueChange={(value) => onStatusFilterChange(value as AccountStatusFilter)}
+      <ToggleGroup
+        variant="filter"
+        value={[statusFilter]}
+        onValueChange={(next) => {
+          if (next[0]) onStatusFilterChange(next[0] as AccountStatusFilter)
+        }}
+        aria-label={strings.accounts.filterLabel}
       >
-        <TabsList aria-label={strings.accounts.filterLabel}>
-          {accountStatusFilters.map((filter) => (
-            <TabsTrigger key={filter} value={filter}>
-              {filterLabels[filter]}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </Tabs>
+        {visibleFilters.map((filter) => (
+          <ToggleGroupItem key={filter} value={filter}>
+            {filterLabels[filter]}
+            <span className="num text-[11px] text-muted-foreground">{counts[filter]}</span>
+          </ToggleGroupItem>
+        ))}
+      </ToggleGroup>
 
       <div className="ml-auto flex flex-wrap items-center gap-2">
         {selectedCount > 0 ? (
@@ -159,11 +174,6 @@ export function AccountToolbar({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-
-        <Button onClick={onAdd}>
-          <PlusIcon />
-          {strings.accounts.addAccount}
-        </Button>
       </div>
     </div>
   )

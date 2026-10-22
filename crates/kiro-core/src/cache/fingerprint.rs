@@ -73,6 +73,11 @@ impl FingerprintTracker {
         tracker
     }
 
+    /// 停止后台淘汰任务（代理运行时退役时调用；任务在下一个周期退出）
+    pub fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+    }
+
     #[allow(dead_code)]
     pub fn new_for_test(config: CacheSimulationConfig) -> Arc<Self> {
         Arc::new(Self {

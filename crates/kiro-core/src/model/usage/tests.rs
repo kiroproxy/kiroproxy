@@ -786,4 +786,385 @@ mod tests {
 
         cleanup_usage_path(&path);
     }
+
+    /// 构造指定时间/模型/token/credits 的记录并直接注入（绕过 record() 的 Utc::now()）
+    #[allow(clippy::too_many_arguments)]
+    fn inject_full(
+        tracker: &UsageTracker,
+        created_at: chrono::DateTime<chrono::Utc>,
+        api_key_id: u32,
+        credential_id: Option<u64>,
+        model: &str,
+        input: i32,
+        output: i32,
+        cache_read: Option<i32>,
+        credits_used: Option<f64>,
+    ) {
+        let record = crate::model::usage::UsageRecord {
+            api_key_id,
+            credential_id,
+            model: model.to_string(),
+            input_tokens: input,
+            output_tokens: output,
+            estimated_cost: calculate_cost(model, input, output),
+            credits_used,
+            cache_read_input_tokens: cache_read,
+            cache_creation_input_tokens: None,
+            cache_creation_5m_input_tokens: 0,
+            cache_creation_1h_input_tokens: 0,
+            created_at,
+            client_ip: None,
+            effort: None,
+            first_token_ms: None,
+            duration_ms: None,
+            thinking_token_count: None,
+            is_stream: None,
+            user_agent: None,
+        };
+        tracker.records.write().push(record);
+    }
+
+    #[tokio::test]
+    async fn test_daily_summaries_total_output_tokens() {
+        let path = temp_usage_path("daily_output_tokens");
+        let tracker = UsageTracker::load(&path).unwrap();
+        inject_full(
+            &tracker,
+            utc_at("2026-10-01T02:00:00Z"),
+            1,
+            None,
+            "claude-sonnet-4.5",
+            100,
+            40,
+            None,
+            None,
+        );
+        inject_full(
+            &tracker,
+            utc_at("2026-10-01T03:00:00Z"),
+            1,
+            None,
+            "claude-opus-4.6",
+            200,
+            60,
+            None,
+            None,
+        );
+        // 负值（异常数据）按 0 计入
+        inject_full(
+            &tracker,
+            utc_at("2026-10-01T04:00:00Z"),
+            1,
+            None,
+            "claude-opus-4.6",
+            10,
+            -5,
+            None,
+            None,
+        );
+        inject_full(
+            &tracker,
+            utc_at("2026-10-02T02:00:00Z"),
+            1,
+            None,
+            "claude-opus-4.6",
+            1,
+            7,
+            None,
+            None,
+        );
+
+        let summaries = tracker.get_daily_summaries();
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].date, "2026-10-02");
+        assert_eq!(summaries[0].total_output_tokens, 7);
+        assert_eq!(summaries[1].date, "2026-10-01");
+        assert_eq!(summaries[1].total_output_tokens, 100);
+        assert_eq!(summaries[1].total_input_tokens, 310);
+
+        let json = serde_json::to_value(&summaries[1]).unwrap();
+        assert_eq!(json["totalOutputTokens"], 100);
+        cleanup_usage_path(&path);
+    }
+
+    #[tokio::test]
+    async fn test_usage_breakdown_aggregates_by_model_and_day() {
+        let path = temp_usage_path("breakdown");
+        let tracker = UsageTracker::load(&path).unwrap();
+        // CST 10-01：opus ×2（一条真实 credits），sonnet ×1
+        inject_full(
+            &tracker,
+            utc_at("2026-10-01T02:00:00Z"),
+            1,
+            Some(1),
+            "claude-opus-4.6",
+            1000,
+            100,
+            Some(800),
+            Some(2.5),
+        );
+        inject_full(
+            &tracker,
+            utc_at("2026-10-01T10:00:00Z"),
+            2,
+            Some(2),
+            "claude-opus-4.6",
+            500,
+            50,
+            None,
+            None,
+        );
+        inject_full(
+            &tracker,
+            utc_at("2026-10-01T11:00:00Z"),
+            1,
+            Some(1),
+            "claude-sonnet-4.5",
+            300,
+            30,
+            Some(100),
+            None,
+        );
+        // UTC 10-01 16:30 = CST 10-02 00:30：归属 10-02
+        inject_full(
+            &tracker,
+            utc_at("2026-10-01T16:30:00Z"),
+            1,
+            Some(1),
+            "claude-sonnet-4.5",
+            10,
+            1,
+            None,
+            Some(0.5),
+        );
+        // 区间外
+        inject_full(
+            &tracker,
+            utc_at("2026-09-30T02:00:00Z"),
+            1,
+            Some(1),
+            "claude-opus-4.6",
+            9,
+            9,
+            None,
+            None,
+        );
+        inject_full(
+            &tracker,
+            utc_at("2026-10-03T02:00:00Z"),
+            1,
+            Some(1),
+            "claude-haiku-4.5",
+            9,
+            9,
+            None,
+            None,
+        );
+
+        let b = tracker.get_usage_breakdown("2026-10-01", "2026-10-02");
+
+        // by_model：请求数降序；opus 与 sonnet 同为 2 次时按模型名升序
+        assert_eq!(b.by_model.len(), 2);
+        let opus = b
+            .by_model
+            .iter()
+            .find(|m| m.model == "claude-opus-4.6")
+            .unwrap();
+        assert_eq!(opus.requests, 2);
+        assert_eq!(opus.input_tokens, 1500);
+        assert_eq!(opus.output_tokens, 150);
+        assert_eq!(opus.cache_read_tokens, 800);
+        let opus_cost = calculate_cost("claude-opus-4.6", 1000, 100)
+            + calculate_cost("claude-opus-4.6", 500, 50);
+        assert!((opus.cost - opus_cost).abs() < 1e-12);
+        let opus_credits =
+            2.5 + calculate_cost("claude-opus-4.6", 500, 50) * get_k_ref("claude-opus-4.6");
+        assert!((opus.credits - opus_credits).abs() < 1e-12);
+        assert_eq!(b.by_model[0].model, "claude-opus-4.6");
+        assert_eq!(b.by_model[1].model, "claude-sonnet-4.5");
+
+        // by_day_model：日期升序 → 模型升序
+        let keys: Vec<(&str, &str)> = b
+            .by_day_model
+            .iter()
+            .map(|d| (d.date.as_str(), d.model.as_str()))
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                ("2026-10-01", "claude-opus-4.6"),
+                ("2026-10-01", "claude-sonnet-4.5"),
+                ("2026-10-02", "claude-sonnet-4.5"),
+            ]
+        );
+        let late = &b.by_day_model[2];
+        assert_eq!(late.requests, 1);
+        assert!((late.credits - 0.5).abs() < 1e-12);
+
+        // 与日报同口径：区间内 credits 合计等于日报 total_credits 之和
+        let daily_total: f64 = tracker
+            .get_daily_summaries()
+            .iter()
+            .filter(|d| d.date.as_str() >= "2026-10-01" && d.date.as_str() <= "2026-10-02")
+            .map(|d| d.total_credits)
+            .sum();
+        let breakdown_total: f64 = b.by_model.iter().map(|m| m.credits).sum();
+        assert!((daily_total - breakdown_total).abs() < 1e-9);
+
+        let json = serde_json::to_value(&b).unwrap();
+        assert!(json["byModel"][0]["cacheReadTokens"].is_number());
+        assert!(json["byDayModel"][0]["outputTokens"].is_number());
+        cleanup_usage_path(&path);
+    }
+
+    #[tokio::test]
+    async fn test_usage_breakdown_sorts_by_requests_desc() {
+        let path = temp_usage_path("breakdown_sort");
+        let tracker = UsageTracker::load(&path).unwrap();
+        for _ in 0..3 {
+            inject_full(
+                &tracker,
+                utc_at("2026-10-05T02:00:00Z"),
+                1,
+                None,
+                "z-model",
+                1,
+                1,
+                None,
+                None,
+            );
+        }
+        inject_full(
+            &tracker,
+            utc_at("2026-10-05T02:00:00Z"),
+            1,
+            None,
+            "a-model",
+            1,
+            1,
+            None,
+            None,
+        );
+        let b = tracker.get_usage_breakdown("2026-10-05", "2026-10-05");
+        assert_eq!(b.by_model[0].model, "z-model");
+        assert_eq!(b.by_model[0].requests, 3);
+        assert_eq!(b.by_model[1].model, "a-model");
+        assert!(
+            tracker
+                .get_usage_breakdown("2026-11-01", "2026-11-30")
+                .by_model
+                .is_empty()
+        );
+        cleanup_usage_path(&path);
+    }
+
+    #[tokio::test]
+    async fn test_records_paged_filtered_by_model_and_range() {
+        use crate::model::usage::UsageRecordFilter;
+        let path = temp_usage_path("filtered_paging");
+        let tracker = UsageTracker::load(&path).unwrap();
+        for i in 0..5 {
+            let ts = utc_at("2026-10-01T02:00:00Z") + chrono::Duration::minutes(i);
+            inject_full(
+                &tracker,
+                ts,
+                1,
+                Some(9),
+                "claude-opus-4.6",
+                1,
+                1,
+                None,
+                None,
+            );
+            inject_full(
+                &tracker,
+                ts,
+                2,
+                Some(8),
+                "claude-sonnet-4.5",
+                1,
+                1,
+                None,
+                None,
+            );
+        }
+        inject_full(
+            &tracker,
+            utc_at("2026-10-09T02:00:00Z"),
+            1,
+            Some(9),
+            "claude-opus-4.6",
+            1,
+            1,
+            None,
+            None,
+        );
+
+        let filter = UsageRecordFilter {
+            model: Some("claude-opus-4.6"),
+            date_range: Some(("2026-10-01", "2026-10-02")),
+            ..Default::default()
+        };
+        let page = tracker.get_records_paged_filtered(&filter, 2, 2, &HashMap::new());
+        assert_eq!(page.total, 5);
+        assert_eq!(page.total_pages, 3);
+        assert_eq!(page.page, 2);
+        assert_eq!(page.records.len(), 2);
+        assert!(page.records.iter().all(|r| r.model == "claude-opus-4.6"));
+        assert!(page.records[0].created_at >= page.records[1].created_at);
+
+        // 组合 api_key / credential 维度
+        let by_key = UsageRecordFilter {
+            api_key_id: Some(2),
+            model: Some("claude-sonnet-4.5"),
+            ..Default::default()
+        };
+        assert_eq!(
+            tracker
+                .get_records_paged_filtered(&by_key, 1, 50, &HashMap::new())
+                .total,
+            5
+        );
+        let by_cred = UsageRecordFilter {
+            credential_id: Some(9),
+            model: Some("claude-sonnet-4.5"),
+            ..Default::default()
+        };
+        assert_eq!(
+            tracker
+                .get_records_paged_filtered(&by_cred, 1, 50, &HashMap::new())
+                .total,
+            0
+        );
+        // 页码越界钳制到最后一页
+        let last = tracker.get_records_paged_filtered(&filter, 99, 2, &HashMap::new());
+        assert_eq!(last.page, 3);
+        assert_eq!(last.records.len(), 1);
+        cleanup_usage_path(&path);
+    }
+
+    #[tokio::test]
+    async fn test_flush_writes_records_immediately_with_private_mode() {
+        let path = temp_usage_path("flush_now");
+        let tracker = UsageTracker::load(&path).unwrap();
+        tracker.record(
+            1,
+            "claude-opus-4.6".to_string(),
+            10,
+            5,
+            RecordOptions::default(),
+        );
+        tracker.flush().unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("claude-opus-4.6"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let reloaded = UsageTracker::load(&path).unwrap();
+        assert_eq!(reloaded.get_summary(1).total_requests, 1);
+        cleanup_usage_path(&path);
+    }
 }

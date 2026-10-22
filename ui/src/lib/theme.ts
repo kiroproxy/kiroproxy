@@ -1,8 +1,15 @@
 import { useSyncExternalStore } from "react"
+import { strings } from "./strings"
 
 export type Theme = "system" | "light" | "dark"
 
 export const THEME_STORAGE_KEY = "kiroproxy.theme"
+
+export const themeOptions: { value: Theme; label: string }[] = [
+  { value: "system", label: strings.settings.themeSystem },
+  { value: "light", label: strings.settings.themeLight },
+  { value: "dark", label: strings.settings.themeDark },
+]
 
 const listeners = new Set<() => void>()
 let currentTheme: Theme | undefined

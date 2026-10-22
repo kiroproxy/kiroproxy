@@ -236,8 +236,9 @@ pub struct Config {
 
     /// 是否在日志中输出 DEBUG 级别事件（控制台 / 日志文件 / Admin 日志页三处一致）
     ///
-    /// 默认 false 保持 info 级过滤。可在 Admin 设置页热切换并写回 config.json；
-    /// 开启时在 RUST_LOG 基础上追加全局 debug 指令，target 定向指令仍优先。
+    /// 默认 false 保持 info 级过滤。可在设置页热切换并写回 config.json；
+    /// 开启时在 RUST_LOG 基础上只为本应用 crate 追加 debug 指令（第三方依赖保持原档位），
+    /// RUST_LOG 中同 target 的指令仍优先。
     #[serde(default)]
     pub debug_logs: bool,
 

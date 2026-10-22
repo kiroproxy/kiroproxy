@@ -1,6 +1,6 @@
-import type { MouseEvent } from "react"
+import { useEffect, useRef, type MouseEvent } from "react"
 import { getCurrentWindow } from "@tauri-apps/api/window"
-import { CheckIcon, MoonIcon, SettingsIcon, SunIcon, SunMoonIcon } from "lucide-react"
+import { ArrowDownToLineIcon, CheckIcon, MoonIcon, SettingsIcon, SunIcon, SunMoonIcon } from "lucide-react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { Button } from "@/components/ui/button"
 import {
@@ -10,38 +10,14 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { strings } from "@/lib/strings"
-import { useTheme, type Theme } from "@/lib/theme"
+import { themeOptions, useTheme } from "@/lib/theme"
 import { cn } from "@/lib/utils"
-import type { ServerStatus } from "@/lib/types"
+import { isUpdateVisible, openUpdateDialog, useUpdateStatus } from "@/lib/update-status"
+import { mainNav, settingsNav, settingsSections } from "./nav"
 
 const isMac = typeof navigator !== "undefined" && navigator.userAgent.includes("Mac")
-
-const mainNav = [
-  { value: "/", label: strings.nav.overview },
-  { value: "/accounts", label: strings.nav.accounts },
-  { value: "/keys", label: strings.nav.keys },
-  { value: "/usage", label: strings.nav.usage },
-  { value: "/logs", label: strings.nav.logs },
-  { value: "/models", label: strings.nav.models },
-]
-
-const settingsNav = [
-  { value: "general", label: strings.settings.sections.general },
-  { value: "service", label: strings.settings.sections.service },
-  { value: "accounts", label: strings.settings.sections.accounts },
-  { value: "network", label: strings.settings.sections.network },
-  { value: "features", label: strings.settings.sections.features },
-  { value: "data", label: strings.settings.sections.data },
-  { value: "appearance", label: strings.settings.sections.appearance },
-  { value: "about", label: strings.settings.sections.about },
-]
-
-const themeOptions: { value: Theme; label: string }[] = [
-  { value: "system", label: strings.settings.themeSystem },
-  { value: "light", label: strings.settings.themeLight },
-  { value: "dark", label: strings.settings.themeDark },
-]
 
 export interface SegmentedNavProps {
   items: { value: string; label: string }[]
@@ -49,11 +25,21 @@ export interface SegmentedNavProps {
   onChange: (value: string) => void
   ariaLabel: string
   className?: string
+  /** 作为页面导航使用时，选中项带 aria-current="page"。 */
+  navigation?: boolean
 }
 
-export function SegmentedNav({ items, value, onChange, ariaLabel, className }: SegmentedNavProps) {
+export function SegmentedNav({
+  items,
+  value,
+  onChange,
+  ariaLabel,
+  className,
+  navigation = false,
+}: SegmentedNavProps) {
   return (
     <ToggleGroup
+      variant="segmented"
       multiple={false}
       value={value ? [value] : []}
       onValueChange={(next) => {
@@ -61,16 +47,13 @@ export function SegmentedNav({ items, value, onChange, ariaLabel, className }: S
         if (selected) onChange(selected)
       }}
       aria-label={ariaLabel}
-      className={cn(
-        "h-8 gap-0 rounded-[12px] border border-border bg-subtle p-0.5",
-        className,
-      )}
+      className={className}
     >
       {items.map((item) => (
         <ToggleGroupItem
           key={item.value}
           value={item.value}
-          className="h-7 rounded-[10px] px-3 text-[12px] data-pressed:bg-card data-pressed:font-semibold data-pressed:shadow-sm data-[state=on]:bg-card data-[state=on]:font-semibold data-[state=on]:shadow-sm"
+          aria-current={navigation && item.value === value ? "page" : undefined}
         >
           {item.label}
         </ToggleGroupItem>
@@ -79,21 +62,50 @@ export function SegmentedNav({ items, value, onChange, ariaLabel, className }: S
   )
 }
 
-function StatusPill({ status, onClick }: { status: ServerStatus; onClick: () => void }) {
-  const healthy = status.running && !status.lastError
+function IconButton({
+  label,
+  onClick,
+  children,
+}: {
+  label: string
+  onClick?: () => void
+  children: React.ReactNode
+}) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={status.running ? strings.status.running : strings.status.stopped}
-      className="flex h-7 items-center gap-1.5 rounded-full border border-border bg-card px-2.5 text-[11.5px] text-muted-foreground transition-colors hover:bg-subtle"
+    <Tooltip>
+      <TooltipTrigger
+        render={<Button variant="icon" size="icon" aria-label={label} onClick={onClick} />}
+      >
+        {children}
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{label}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+/** 更新进行中/已就绪时的小胶囊，点击打开更新面板。 */
+function UpdatePill() {
+  const status = useUpdateStatus()
+  if (!isUpdateVisible(status.phase)) return null
+  const label =
+    status.phase === "ready"
+      ? strings.update.pillReady
+      : status.phase === "installing"
+        ? strings.update.pillInstalling
+        : strings.update.pillDownloading(Math.round(status.progress ?? 0))
+  return (
+    <Button
+      variant="capsule"
+      size="sm"
+      onClick={openUpdateDialog}
+      className={cn(
+        "gap-1.5",
+        status.phase === "ready" && "border-primary/40 text-text-danger",
+      )}
     >
-      <span
-        className={cn("size-1.5 shrink-0 rounded-full", healthy ? "bg-success" : "bg-danger")}
-      />
-      <span>{status.running ? strings.shell.statusRunning : strings.shell.statusStopped}</span>
-      <span className="num text-faint">:{status.port}</span>
-    </button>
+      <ArrowDownToLineIcon className={cn(status.phase === "installing" && "animate-pulse")} />
+      {label}
+    </Button>
   )
 }
 
@@ -102,13 +114,18 @@ function ThemeMenu() {
   const Icon = theme === "dark" ? MoonIcon : theme === "light" ? SunIcon : SunMoonIcon
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger
-        render={
-          <Button variant="icon" size="icon" aria-label={strings.settings.theme}>
-            <Icon />
-          </Button>
-        }
-      />
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <DropdownMenuTrigger
+              render={<Button variant="icon" size="icon" aria-label={strings.settings.theme} />}
+            />
+          }
+        >
+          <Icon />
+        </TooltipTrigger>
+        <TooltipContent side="bottom">{strings.settings.theme}</TooltipContent>
+      </Tooltip>
       <DropdownMenuContent align="end" className="w-36">
         {themeOptions.map((option) => (
           <DropdownMenuItem
@@ -125,18 +142,19 @@ function ThemeMenu() {
   )
 }
 
-export interface TopBarProps {
-  status: ServerStatus
-}
-
-export function TopBar({ status }: TopBarProps) {
+export function TopBar() {
   const { pathname } = useLocation()
   const navigate = useNavigate()
   const settingsMode = pathname.startsWith("/settings")
   const activeMain = mainNav.find((item) =>
     item.value === "/" ? pathname === "/" : pathname.startsWith(item.value),
   )?.value
-  const activeSection = pathname.split("/")[2] || "general"
+  const activeSection = pathname.split("/")[2] || settingsSections[0]
+  // 「返回应用」回到进入设置前所在的页面。
+  const lastAppPath = useRef("/")
+  useEffect(() => {
+    if (!settingsMode) lastAppPath.current = pathname
+  }, [pathname, settingsMode])
 
   const handleDragStart = (event: MouseEvent<HTMLElement>) => {
     if (event.button !== 0) return
@@ -168,8 +186,8 @@ export function TopBar({ status }: TopBarProps) {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => navigate("/")}
-            className="px-2 text-[12px]"
+            onClick={() => navigate(lastAppPath.current)}
+            className="px-2 text-[12px] text-muted-foreground"
           >
             {strings.nav.back}
           </Button>
@@ -185,40 +203,38 @@ export function TopBar({ status }: TopBarProps) {
       </div>
 
       <div data-tauri-drag-region className="flex min-w-0 flex-1 items-center justify-center">
-        <div className="absolute left-1/2 -translate-x-1/2">
+        <nav
+          aria-label={settingsMode ? strings.shell.settingsNavLabel : strings.shell.mainNavLabel}
+          className="absolute left-1/2 -translate-x-1/2"
+        >
           {settingsMode ? (
             <SegmentedNav
+              navigation
               items={settingsNav}
               value={activeSection}
               onChange={(section) => navigate(`/settings/${section}`)}
               ariaLabel={strings.shell.settingsNavLabel}
-              className="max-w-[calc(100vw-360px)] overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              className="max-w-[calc(100vw-320px)] overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             />
           ) : (
             <SegmentedNav
+              navigation
               items={mainNav}
               value={activeMain}
               onChange={(target) => navigate(target)}
               ariaLabel={strings.shell.mainNavLabel}
             />
           )}
-        </div>
+        </nav>
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
-        {settingsMode ? null : (
-          <StatusPill status={status} onClick={() => navigate("/")} />
-        )}
+        <UpdatePill />
         <ThemeMenu />
         {settingsMode ? null : (
-          <Button
-            variant="icon"
-            size="icon"
-            aria-label={strings.nav.settings}
-            onClick={() => navigate("/settings/general")}
-          >
+          <IconButton label={strings.nav.settings} onClick={() => navigate("/settings/service")}>
             <SettingsIcon />
-          </Button>
+          </IconButton>
         )}
       </div>
     </header>

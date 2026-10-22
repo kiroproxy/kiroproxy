@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Harllan He. Licensed under MIT.
+// Copyright (c) 2026 pigcursor. Licensed under MIT.
 
 use crate::common::fs::atomic_write;
 use crate::model::config::Config;
@@ -41,6 +41,17 @@ impl ConfigStore {
     }
 
     pub fn update_field(&self, key: &str, value: Value) -> anyhow::Result<()> {
+        self.update_fields(&[(key, value)])
+    }
+
+    /// 一次读改写更新多个字段（只写一次文件，保留文件中的未知字段）
+    ///
+    /// config.json 的所有写入都应经过同一个 ConfigStore：锁内重新读取磁盘内容再合并，
+    /// 不会用过期的内存快照覆盖其它字段。
+    pub fn update_fields(&self, fields: &[(&str, Value)]) -> anyhow::Result<()> {
+        if fields.is_empty() {
+            return Ok(());
+        }
         let _guard = self.lock.lock();
         let mut json: Value = if self.path.exists() {
             serde_json::from_str(&std::fs::read_to_string(&self.path)?)?
@@ -50,17 +61,15 @@ impl ConfigStore {
         let obj = json
             .as_object_mut()
             .ok_or_else(|| anyhow::anyhow!("config.json 不是对象"))?;
-        obj.insert(key.to_string(), value);
+        for (key, value) in fields {
+            obj.insert((*key).to_string(), value.clone());
+        }
         self.write_bytes(&serde_json::to_vec_pretty(&json)?)
     }
 
     fn write_bytes(&self, bytes: &[u8]) -> anyhow::Result<()> {
+        // atomic_write 以 0600 创建临时文件并 rename，目标文件权限即为 0600
         atomic_write(&self.path, bytes)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o600));
-        }
         Ok(())
     }
 }
@@ -89,5 +98,32 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(raw["port"], 6000);
         assert_eq!(raw["unknownField"], 42);
+    }
+
+    #[test]
+    fn update_fields_writes_all_fields_in_one_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, r#"{"port":5690,"keep":true}"#).unwrap();
+        let store = ConfigStore::new(path.clone());
+        store
+            .update_fields(&[
+                ("host", serde_json::json!("0.0.0.0")),
+                ("port", serde_json::json!(6001)),
+                ("proxyUrl", serde_json::Value::Null),
+            ])
+            .unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["host"], "0.0.0.0");
+        assert_eq!(raw["port"], 6001);
+        assert!(raw["proxyUrl"].is_null());
+        assert_eq!(raw["keep"], true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
     }
 }

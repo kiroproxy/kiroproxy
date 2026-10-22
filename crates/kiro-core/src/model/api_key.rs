@@ -146,6 +146,8 @@ pub struct ApiKeyManager {
     next_id_counter: AtomicU32,
     /// 计数器落盘串行锁：串行化"重读磁盘 → 取 max → 写盘"
     counter_lock: Mutex<()>,
+    /// api_keys.json 落盘串行锁：保证写盘顺序与修改顺序一致
+    save_lock: Mutex<()>,
 }
 
 impl ApiKeyManager {
@@ -176,6 +178,7 @@ impl ApiKeyManager {
             file_path: path,
             next_id_counter: AtomicU32::new(seed),
             counter_lock: Mutex::new(()),
+            save_lock: Mutex::new(()),
         };
 
         // 无条件落盘，自愈缺失/损坏的计数器文件（存量部署首次运行即走此路径）
@@ -262,14 +265,23 @@ impl ApiKeyManager {
         self.save_id_counter_at_least(min_id);
     }
 
-    /// 持久化到文件
+    /// 持久化到文件（原子写入，0600：文件内含明文 API Key）
+    ///
+    /// 持有读锁完成序列化与写盘：并发修改各自持锁序列化，写盘顺序与修改顺序一致，
+    /// 不会出现「较旧的快照后落盘覆盖较新的快照」。
     fn save(&self) -> anyhow::Result<()> {
         let keys = self.keys.read();
         let content = serde_json::to_string_pretty(&*keys)?;
-        if let Some(parent) = self.file_path.parent() {
+        let _guard = self.save_lock.lock();
+        drop(keys);
+        if let Some(parent) = self
+            .file_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+        {
             fs::create_dir_all(parent)?;
         }
-        fs::write(&self.file_path, content)?;
+        atomic_write(&self.file_path, content.as_bytes())?;
         Ok(())
     }
 

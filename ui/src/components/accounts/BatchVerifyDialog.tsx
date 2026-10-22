@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import {
@@ -10,8 +10,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Progress } from "@/components/ui/progress"
+import { accountName } from "@/lib/account-status"
 import { ipc } from "@/lib/ipc"
-import { useVerifyAccounts } from "@/lib/queries"
+import { useAccounts, useVerifyAccounts } from "@/lib/queries"
 import { strings } from "@/lib/strings"
 import type { VerifyOutcome } from "@/lib/types"
 
@@ -25,13 +26,14 @@ export function BatchVerifyDialog({
   onOpenChange: (open: boolean) => void
 }) {
   const verify = useVerifyAccounts()
+  const accounts = useAccounts()
   const [outcome, setOutcome] = useState<VerifyOutcome | null>(null)
+  const names = new Map((accounts.data?.credentials ?? []).map((item) => [item.id, accountName(item)]))
 
-  useEffect(() => {
-    if (!open) {
-      setOutcome(null)
-    }
-  }, [open])
+  const handleOpenChange = (next: boolean) => {
+    if (!next) setOutcome(null)
+    onOpenChange(next)
+  }
 
   const start = () => {
     setOutcome(null)
@@ -40,31 +42,26 @@ export function BatchVerifyDialog({
         setOutcome(result)
         toast.success(strings.accounts.verify.result(result.success, result.failed))
       },
-      onError: (error) => toast.error(error.message),
     })
   }
 
   const cancel = () => {
     void ipc.cancelVerifyAccounts()
-    onOpenChange(false)
+    handleOpenChange(false)
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{strings.accounts.verify.title}</DialogTitle>
-          <DialogDescription>
-            将依次验证选中的 {ids.length} 个账号，每个账号间隔 2 秒。
-          </DialogDescription>
+          <DialogDescription>{strings.accounts.verifyHint(ids.length)}</DialogDescription>
         </DialogHeader>
 
         {verify.isPending ? (
           <div className="flex flex-col gap-2">
             <Progress value={null} />
-            <p className="text-[12px] text-muted-foreground">
-              正在验活 {ids.length} 个账号…
-            </p>
+            <p className="text-[12px] text-muted-foreground">{strings.accounts.verifyRunning(ids.length)}</p>
           </div>
         ) : null}
 
@@ -73,28 +70,26 @@ export function BatchVerifyDialog({
             <p className="text-[13px] font-semibold">
               {strings.accounts.verify.result(outcome.success, outcome.failed)}
             </p>
-            <div className="max-h-56 overflow-y-auto rounded-[10px] bg-subtle p-2">
+            <ul className="max-h-56 overflow-y-auto rounded-[10px] bg-subtle p-2">
               {outcome.results.map((item) => (
-                <div
+                <li
                   key={item.id}
                   className="flex items-center justify-between gap-2 border-b border-border/60 py-1 text-[12px] last:border-0"
                 >
-                  <span className="num">#{item.id}</span>
+                  <span className="min-w-0 truncate">{names.get(item.id) ?? `#${item.id}`}</span>
                   <span
-                    className={
-                      item.status === "success" ? "text-text-success" : "text-text-danger"
-                    }
+                    className={item.status === "success" ? "text-text-success" : "text-text-danger"}
                   >
                     {item.status === "success"
                       ? strings.accounts.verify.success
                       : strings.accounts.verify.failed}
                   </span>
-                  <span className="max-w-[220px] truncate text-muted-foreground">
+                  <span className="max-w-[200px] truncate text-muted-foreground" title={item.message ?? undefined}>
                     {item.message ?? "—"}
                   </span>
-                </div>
+                </li>
               ))}
-            </div>
+            </ul>
           </div>
         ) : null}
 
@@ -105,7 +100,7 @@ export function BatchVerifyDialog({
             </Button>
           ) : (
             <>
-              <Button variant="secondary" onClick={() => onOpenChange(false)}>
+              <Button variant="secondary" onClick={() => handleOpenChange(false)}>
                 {strings.common.close}
               </Button>
               <Button onClick={start}>{strings.accounts.verify.start}</Button>

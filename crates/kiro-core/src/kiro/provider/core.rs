@@ -77,20 +77,25 @@ pub struct KiroProvider {
 #[allow(dead_code)] // 拆分自原 provider.rs：部分方法仅测试/预留使用
 impl KiroProvider {
     /// 创建新的 KiroProvider 实例
-    pub fn new(token_manager: Arc<MultiTokenManager>) -> Self {
+    pub fn new(token_manager: Arc<MultiTokenManager>) -> anyhow::Result<Self> {
         Self::with_proxy(token_manager, None)
     }
 
     /// 创建带代理配置的 KiroProvider 实例
-    pub fn with_proxy(token_manager: Arc<MultiTokenManager>, proxy: Option<ProxyConfig>) -> Self {
+    ///
+    /// 全局代理来自用户可编辑的 config.json：地址无效时返回错误（由启动流程转成可读的
+    /// 启动错误），不能 panic——否则每次启动都会在 setup 阶段崩溃。
+    pub fn with_proxy(
+        token_manager: Arc<MultiTokenManager>,
+        proxy: Option<ProxyConfig>,
+    ) -> anyhow::Result<Self> {
         let tls_backend = token_manager.config().tls_backend;
         // 预热：为全局代理配置构建普通超时 Client（长超时 Client 按需懒创建）
-        let initial_client = build_client(proxy.as_ref(), UPSTREAM_TIMEOUT_SECS, tls_backend)
-            .expect("创建 HTTP 客户端失败");
+        let initial_client = build_client(proxy.as_ref(), UPSTREAM_TIMEOUT_SECS, tls_backend)?;
         let mut cache = HashMap::new();
         cache.insert((proxy.clone(), false), initial_client);
 
-        Self {
+        Ok(Self {
             token_manager,
             global_proxy: proxy,
             client_cache: Mutex::new(cache),
@@ -101,7 +106,7 @@ impl KiroProvider {
             throttle_log_store: None,
             failure_log_store: None,
             endpoint_registry: Arc::new(EndpointBucketRegistry::new()),
-        }
+        })
     }
 
     /// 注入外部 endpoint_registry（多 provider 共享桶状态时使用）

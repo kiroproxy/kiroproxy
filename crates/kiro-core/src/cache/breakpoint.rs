@@ -450,6 +450,12 @@ pub struct BreakpointCache {
     min_tokens_override: Option<i32>,
     snapshot_path: Option<PathBuf>,
     dirty: AtomicBool,
+    /// 已停止维护：不再写快照（代理运行时重建后旧表退役）
+    stopped: AtomicBool,
+    /// 唤醒维护任务立即退出
+    stop: Arc<tokio::sync::Notify>,
+    /// 串行化快照写盘
+    snapshot_lock: Mutex<()>,
 }
 
 impl BreakpointCache {
@@ -465,6 +471,9 @@ impl BreakpointCache {
             min_tokens_override: (min_tokens_override > 0).then_some(min_tokens_override),
             snapshot_path,
             dirty: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
+            stop: Arc::new(tokio::sync::Notify::new()),
+            snapshot_lock: Mutex::new(()),
         }
     }
 
@@ -580,14 +589,23 @@ impl BreakpointCache {
         }
     }
 
-    /// 有变更时把缓存表原子写入快照文件
+    /// 有变更时把缓存表原子写入快照文件（停止维护后为空操作）
     pub fn save_snapshot(&self) {
+        if self.stopped.load(Ordering::SeqCst) {
+            return;
+        }
+        self.write_snapshot();
+    }
+
+    fn write_snapshot(&self) {
         let Some(path) = &self.snapshot_path else {
             return;
         };
         if !self.dirty.swap(false, Ordering::Relaxed) {
             return;
         }
+        // 快照写盘串行化：维护任务与 stop_maintenance 的最终快照不会交错
+        let _guard = self.snapshot_lock.lock();
         // 持锁只做 Copy 级拷贝；hex 编码与序列化在锁外，避免大表时阻塞 plan/commit
         let raw: Vec<([u8; 32], Entry)> = {
             let table = self.table.lock();
@@ -610,14 +628,28 @@ impl BreakpointCache {
     }
 
     /// 启动后台维护任务：周期清理过期条目并落盘快照
-    pub fn start_maintenance(self: &Arc<Self>) {
-        let this = Arc::clone(self);
+    ///
+    /// 任务只持有 `Weak`：缓存表随代理运行时一起释放后任务自动退出；`stop_maintenance`
+    /// 可提前结束（代理重建时旧表立即停止写快照，避免与新表交替覆盖同一文件）。
+    pub fn start_maintenance(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        self.spawn_maintenance(MAINTENANCE_INTERVAL)
+    }
+
+    fn spawn_maintenance(self: &Arc<Self>, interval: Duration) -> tokio::task::JoinHandle<()> {
+        let weak = Arc::downgrade(self);
+        let stop = self.stop.clone();
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval(MAINTENANCE_INTERVAL);
+            let mut tick = tokio::time::interval(interval);
             tick.tick().await;
             loop {
-                tick.tick().await;
-                let this = Arc::clone(&this);
+                tokio::select! {
+                    _ = tick.tick() => {}
+                    _ = stop.notified() => break,
+                }
+                let Some(this) = weak.upgrade() else { break };
+                if this.stopped.load(Ordering::SeqCst) {
+                    break;
+                }
                 // 快照写盘是同步 IO，放到 blocking 线程池
                 if let Err(e) = tokio::task::spawn_blocking(move || {
                     this.evict_expired();
@@ -628,7 +660,20 @@ impl BreakpointCache {
                     tracing::warn!("[prompt-cache] 后台维护任务异常: {}", e);
                 }
             }
-        });
+            tracing::debug!("[prompt-cache] 后台维护任务已退出");
+        })
+    }
+
+    /// 停止后台维护；`final_snapshot = true` 时同步写出最后一次快照（退出 / 退役时调用）
+    pub fn stop_maintenance(&self, final_snapshot: bool) {
+        if self.stopped.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        // notify_one 会保留一个许可：任务即使尚未进入 select 也能收到
+        self.stop.notify_one();
+        if final_snapshot {
+            self.write_snapshot();
+        }
     }
 }
 
@@ -1029,5 +1074,51 @@ mod tests {
         ));
         assert!(p.read > 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn maintenance_task_exits_when_cache_dropped() {
+        let cache = Arc::new(BreakpointCache::new(0, None));
+        let handle = cache.spawn_maintenance(Duration::from_millis(10));
+        drop(cache);
+        // 只持有 Weak：缓存表释放后下一个周期即退出，不再泄漏任务与表
+        tokio::time::timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("维护任务应在缓存释放后退出")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stop_maintenance_exits_task_and_writes_final_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prompt_cache.json");
+        let cache = Arc::new(BreakpointCache::new(0, Some(path.clone())));
+        // 长周期：只有 stop 信号能让任务及时退出
+        let handle = cache.spawn_maintenance(Duration::from_secs(3600));
+        cache.commit_at(
+            &PendingWrites {
+                entries: vec![([7u8; 32], Tier::FiveM)],
+            },
+            now_ms(),
+        );
+        cache.stop_maintenance(true);
+        tokio::time::timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("stop_maintenance 后维护任务应立即退出")
+            .unwrap();
+        assert!(path.exists(), "停止时应写出最终快照");
+        assert_eq!(load_snapshot(&path).len(), 1);
+
+        // 停止后不再写快照（退役的旧表不得覆盖新表的快照）
+        std::fs::remove_file(&path).unwrap();
+        cache.commit_at(
+            &PendingWrites {
+                entries: vec![([8u8; 32], Tier::FiveM)],
+            },
+            now_ms(),
+        );
+        cache.save_snapshot();
+        cache.stop_maintenance(true);
+        assert!(!path.exists());
     }
 }

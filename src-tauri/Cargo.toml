@@ -15,6 +15,8 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+# 软件更新：Rust 侧驱动（检查/后台下载/用户确认后安装），需要与 tauri 2.12 兼容的 2.14.0
+tauri-plugin-updater = "=2.14.0"
 kiro-core = { path = "../crates/kiro-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -22,6 +24,9 @@ tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 parking_lot = "0.12"
+# 与 kiro-core 锁定的版本一致（已在 Cargo.lock 中），不引入新的依赖
+tracing = "=0.1.44"
+reqwest = { version = "=0.12.28", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

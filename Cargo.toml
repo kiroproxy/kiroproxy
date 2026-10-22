@@ -5,3 +5,12 @@ members = ["crates/kiro-core", "src-tauri"]
 [workspace.package]
 edition = "2024"
 license = "MIT"
+
+# 发布构建：整体 LTO + 单 codegen unit + 去符号，缩小安装包。
+# 保留 panic = "unwind"：abort 会让单个请求处理中的 panic 直接带崩整个应用。
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "unwind"

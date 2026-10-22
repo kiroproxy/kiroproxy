@@ -1,85 +1,120 @@
-import type { ReactNode } from "react"
+import { Suspense, useEffect, useRef, useState, type ReactNode } from "react"
+import { toast } from "sonner"
 import { Outlet, useLocation } from "react-router-dom"
+import { Skeleton } from "@/components/ui/skeleton"
+import { TooltipProvider } from "@/components/ui/tooltip"
 import { strings } from "@/lib/strings"
+import { bindUpdateEvents, openUpdateDialog, useUpdateStatus } from "@/lib/update-status"
+import { UpdateDialog } from "@/components/update/UpdateDialog"
+import { cn } from "@/lib/utils"
+import { isSettingsSection } from "./nav"
+import { PageHeaderSetterContext, PageHeaderValueContext, type PageHeader } from "./page-header"
 import { StatusBar } from "./StatusBar"
 import { Toolbar } from "./Toolbar"
 import { TopBar } from "./TopBar"
 import { useShellStatus } from "./use-shell-status"
 
-export interface AppShellProps {
-  title?: string
-  subtitle?: string
-  actions?: ReactNode
-  children?: ReactNode
-}
-
 interface PageMeta {
   title: string
   subtitle: string
+  /** 内容列最大宽度；设置与接入页是单列，其余页面放宽到 1280。 */
+  width: "content" | "column"
 }
 
 function usePageMeta(): PageMeta {
   const { pathname } = useLocation()
+  const content = (title: string, subtitle: string): PageMeta => ({ title, subtitle, width: "content" })
 
-  if (pathname === "/") {
-    return { title: strings.overview.title, subtitle: strings.overview.subtitle }
-  }
-  if (pathname.startsWith("/accounts/")) {
-    return { title: strings.accounts.details, subtitle: strings.accounts.subtitle }
-  }
-  if (pathname.startsWith("/accounts")) {
-    return { title: strings.accounts.title, subtitle: strings.accounts.subtitle }
-  }
-  if (pathname.startsWith("/keys")) {
-    return { title: strings.keys.title, subtitle: strings.keys.subtitle }
-  }
-  if (pathname.startsWith("/usage")) {
-    return { title: strings.usage.title, subtitle: strings.usage.subtitle }
-  }
-  if (pathname.startsWith("/logs")) {
-    return { title: strings.logs.title, subtitle: strings.logs.subtitle }
-  }
-  if (pathname.startsWith("/models")) {
-    return { title: strings.models.title, subtitle: strings.models.subtitle }
-  }
+  if (pathname === "/") return content(strings.overview.title, strings.overview.subtitle)
+  if (pathname.startsWith("/accounts/")) return content(strings.accounts.details, "")
+  if (pathname.startsWith("/accounts")) return content(strings.accounts.title, strings.accounts.subtitle)
+  if (pathname.startsWith("/keys")) return content(strings.keys.title, strings.keys.subtitle)
+  if (pathname.startsWith("/usage")) return content(strings.usage.title, strings.usage.subtitle)
+  if (pathname.startsWith("/logs")) return content(strings.logs.title, strings.logs.subtitle)
+  if (pathname.startsWith("/models")) return content(strings.models.title, strings.models.subtitle)
   if (pathname.startsWith("/settings")) {
-    return { title: strings.settings.title, subtitle: strings.settings.subtitle }
+    const section = pathname.split("/")[2]
+    if (isSettingsSection(section)) {
+      return {
+        title: strings.settings.sections[section],
+        subtitle: strings.settings.sectionHints[section],
+        width: "column",
+      }
+    }
+    return { title: strings.settings.title, subtitle: strings.settings.subtitle, width: "column" }
   }
   if (pathname.startsWith("/connect")) {
-    return { title: strings.connect.title, subtitle: strings.connect.subtitle }
+    return { title: strings.connect.title, subtitle: strings.connect.subtitle, width: "column" }
   }
-  return { title: strings.app.name, subtitle: "" }
+  return content(strings.app.name, "")
 }
 
-export function AppShell({ title, subtitle, actions, children }: AppShellProps) {
+function PageFallback() {
+  return (
+    <div className="flex flex-col gap-3" aria-busy="true" aria-label={strings.common.loading}>
+      <Skeleton className="h-24 w-full rounded-[16px]" />
+      <Skeleton className="h-48 w-full rounded-[16px]" />
+    </div>
+  )
+}
+
+export function AppShell({ children }: { children?: ReactNode }) {
   const meta = usePageMeta()
   const shellStatus = useShellStatus()
+  const [header, setHeader] = useState<PageHeader | null>(null)
   const { pathname } = useLocation()
-  const settingsMode = pathname.startsWith("/settings")
+  // 日志页需要固定工具栏、只滚动日志区，主区域改为 flex 列并取消自身滚动。
+  const fill = pathname.startsWith("/logs")
+  const width = meta.width === "column" ? "max-w-[760px]" : "max-w-[1280px]"
+  const update = useUpdateStatus()
+  const notifiedVersion = useRef<string | null>(null)
 
-  const toolbar = (
-    <Toolbar
-      title={title ?? meta.title}
-      subtitle={subtitle ?? meta.subtitle}
-      actions={actions}
-    />
-  )
+  useEffect(() => bindUpdateEvents(), [])
+
+  // 更新包下载完成后提示一次；同一版本只提醒一次
+  useEffect(() => {
+    const version = update.latestVersion
+    if (update.phase !== "ready" || !version || notifiedVersion.current === version) return
+    notifiedVersion.current = version
+    toast.info(strings.update.toastReady(version), {
+      duration: 12_000,
+      action: { label: strings.update.restartNow, onClick: openUpdateDialog },
+    })
+  }, [update.phase, update.latestVersion])
 
   return (
-    <div className="flex h-screen flex-col bg-background">
-      <TopBar status={shellStatus.server} />
-      {settingsMode ? (
-        <div className="mx-auto w-full max-w-[808px]">{toolbar}</div>
-      ) : (
-        toolbar
-      )}
-      <main className="flex-1 overflow-y-auto px-6 pb-5">{children ?? <Outlet />}</main>
-      <StatusBar
-        status={shellStatus.server}
-        currentAccount={shellStatus.currentAccount}
-        rpm={shellStatus.rpm}
-        version={shellStatus.version}
-      />
-    </div>
+    <TooltipProvider>
+      <PageHeaderSetterContext.Provider value={setHeader}>
+        <PageHeaderValueContext.Provider value={header}>
+          <div className="flex h-screen flex-col bg-background">
+            <TopBar />
+            {/* 工具栏固定在内容区上方，页面主操作不会随内容滚走 */}
+            <div className="shrink-0 px-6">
+              <div className={cn("mx-auto w-full", width)}>
+                <Toolbar
+                  title={header?.title ?? meta.title}
+                  subtitle={header?.subtitle ?? meta.subtitle}
+                  badges={header?.badges}
+                  actions={header?.actions}
+                  back={header?.back}
+                />
+              </div>
+            </div>
+            <main
+              className={cn(
+                "flex min-h-0 flex-1 flex-col px-6 pb-5",
+                fill ? "overflow-hidden" : "overflow-y-auto",
+              )}
+            >
+              <div className={cn("mx-auto flex min-h-0 w-full flex-1 flex-col", width)}>
+                <Suspense fallback={<PageFallback />}>{children ?? <Outlet />}</Suspense>
+              </div>
+            </main>
+            <StatusBar status={shellStatus} />
+            <UpdateDialog />
+          </div>
+        </PageHeaderValueContext.Provider>
+      </PageHeaderSetterContext.Provider>
+    </TooltipProvider>
   )
 }

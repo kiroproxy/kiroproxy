@@ -1,5 +1,6 @@
-// Copyright (c) 2026 Harllan He. Licensed under MIT.
+// Copyright (c) 2026 pigcursor. Licensed under MIT.
 
+use crate::commands::blocking;
 use crate::error::IpcError;
 use crate::state::{AppState, Core};
 use chrono::{DateTime, Utc};
@@ -102,19 +103,23 @@ fn not_found() -> IpcError {
 }
 
 fn credential_labels(core: &Core) -> HashMap<u64, String> {
-    core.backend.read().admin.credential_labels()
+    core.admin().credential_labels()
 }
 
+/// 列表需要为每个 Key 汇总用量（遍历全部用量记录），放到阻塞线程池
 #[tauri::command]
-pub fn list_api_keys(state: tauri::State<'_, AppState>) -> Result<Vec<ApiKeyView>, IpcError> {
+pub async fn list_api_keys(state: tauri::State<'_, AppState>) -> Result<Vec<ApiKeyView>, IpcError> {
     let core = state.core()?;
-    Ok(core
-        .stores
-        .api_keys
-        .list()
-        .iter()
-        .map(|key| api_key_view(&core, key))
-        .collect())
+    blocking(move || {
+        Ok(core
+            .stores
+            .api_keys
+            .list()
+            .iter()
+            .map(|key| api_key_view(&core, key))
+            .collect())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -129,92 +134,111 @@ pub fn get_api_key_secret(state: tauri::State<'_, AppState>, id: u32) -> Result<
         .ok_or_else(not_found)
 }
 
+/// 写入 api_keys.json（fsync）放到阻塞线程池
 #[tauri::command]
-pub fn create_api_key(
+pub async fn create_api_key(
     state: tauri::State<'_, AppState>,
     req: CreateApiKeyRequest,
 ) -> Result<ApiKeyView, IpcError> {
     let core = state.core()?;
-    let key = core.stores.api_keys.create(
-        req.name,
-        None,
-        req.spending_limit,
-        Some(req.limit_unit),
-        req.duration_days,
-        req.bound_credential_ids,
-    )?;
-    Ok(api_key_view(&core, &key))
+    blocking(move || {
+        let key = core.stores.api_keys.create(
+            req.name,
+            None,
+            req.spending_limit,
+            Some(req.limit_unit),
+            req.duration_days,
+            req.bound_credential_ids,
+        )?;
+        Ok(api_key_view(&core, &key))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn update_api_key(
+pub async fn update_api_key(
     state: tauri::State<'_, AppState>,
     id: u32,
     req: UpdateApiKeyRequest,
 ) -> Result<ApiKeyView, IpcError> {
     let core = state.core()?;
-    let updated = core.stores.api_keys.update(
-        id,
-        req.name,
-        req.enabled,
-        None,
-        req.spending_limit,
-        req.limit_unit,
-        req.duration_days,
-        req.bound_credential_ids,
-    )?;
-    updated
-        .map(|key| api_key_view(&core, &key))
-        .ok_or_else(not_found)
+    blocking(move || {
+        let updated = core.stores.api_keys.update(
+            id,
+            req.name,
+            req.enabled,
+            None,
+            req.spending_limit,
+            req.limit_unit,
+            req.duration_days,
+            req.bound_credential_ids,
+        )?;
+        updated
+            .map(|key| api_key_view(&core, &key))
+            .ok_or_else(not_found)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn delete_api_key(state: tauri::State<'_, AppState>, id: u32) -> Result<(), IpcError> {
+pub async fn delete_api_key(state: tauri::State<'_, AppState>, id: u32) -> Result<(), IpcError> {
     let core = state.core()?;
-    if core.stores.api_keys.delete(id)? {
-        Ok(())
-    } else {
-        Err(not_found())
-    }
+    blocking(move || {
+        if core.stores.api_keys.delete(id)? {
+            Ok(())
+        } else {
+            Err(not_found())
+        }
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn get_all_api_key_usage(
+pub async fn get_all_api_key_usage(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<UsageSummary>, IpcError> {
     let core = state.core()?;
-    Ok(core.stores.usage.get_all_summaries())
+    blocking(move || Ok(core.stores.usage.get_all_summaries())).await
 }
 
 #[tauri::command]
-pub fn get_api_key_usage(
+pub async fn get_api_key_usage(
     state: tauri::State<'_, AppState>,
     id: u32,
 ) -> Result<UsageSummary, IpcError> {
     let core = state.core()?;
-    Ok(core.stores.usage.get_summary(id))
+    blocking(move || Ok(core.stores.usage.get_summary(id))).await
 }
 
 #[tauri::command]
-pub fn get_api_key_usage_records(
+pub async fn get_api_key_usage_records(
     state: tauri::State<'_, AppState>,
     id: u32,
     page: usize,
     page_size: usize,
 ) -> Result<UsageRecordsPage, IpcError> {
     let core = state.core()?;
-    let labels = credential_labels(&core);
-    Ok(core
-        .stores
-        .usage
-        .get_records_paged(id, page.max(1), page_size.max(1), &labels))
+    blocking(move || {
+        let labels = credential_labels(&core);
+        Ok(core
+            .stores
+            .usage
+            .get_records_paged(id, page.max(1), page_size.max(1), &labels))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn reset_api_key_usage(state: tauri::State<'_, AppState>, id: u32) -> Result<(), IpcError> {
+pub async fn reset_api_key_usage(
+    state: tauri::State<'_, AppState>,
+    id: u32,
+) -> Result<(), IpcError> {
     let core = state.core()?;
-    core.stores.usage.reset(id)?;
-    Ok(())
+    blocking(move || {
+        core.stores.usage.reset(id)?;
+        Ok(())
+    })
+    .await
 }
 
 #[cfg(test)]

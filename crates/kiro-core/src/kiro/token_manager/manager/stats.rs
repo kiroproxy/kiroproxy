@@ -24,6 +24,12 @@ impl MultiTokenManager {
     pub(crate) fn persist_credentials(&self) -> anyhow::Result<bool> {
         use anyhow::Context;
 
+        // 已退役的实例不再回写：接替它的新实例才是磁盘状态的唯一写入方
+        if self.retired.load(Ordering::SeqCst) {
+            tracing::debug!("账号管理器已退役，跳过回写 credentials.json");
+            return Ok(false);
+        }
+
         let path = match &self.credentials_path {
             Some(p) => p,
             None => return Ok(false),
@@ -217,8 +223,11 @@ impl MultiTokenManager {
         tracing::info!("已从缓存加载 {} 条统计数据", stats.len());
     }
 
-    /// 将当前统计数据持久化到磁盘
+    /// 将当前统计数据持久化到磁盘（已退役的实例跳过）
     pub(crate) fn save_stats(&self) {
+        if self.retired.load(Ordering::SeqCst) {
+            return;
+        }
         let path = match self.stats_path() {
             Some(p) => p,
             None => return,

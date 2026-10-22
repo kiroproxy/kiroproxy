@@ -3,11 +3,12 @@
 //!
 //! 记录每个 credential 收到 401/403 响应的事件详情，持久化到 `failure_log.json`。
 
+use crate::common::fs::atomic_write;
 use chrono::{DateTime, Utc};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -32,6 +33,10 @@ pub struct FailureLogStore {
     events: Arc<RwLock<Vec<FailureEvent>>>,
 
     dirty_tx: Option<mpsc::UnboundedSender<()>>,
+    /// 落盘路径（None = 纯内存，降级/测试场景）
+    path: Option<PathBuf>,
+    /// 串行化「序列化 + 写盘」：后台周期写与退出时的 flush 不会以旧快照覆盖新快照
+    flush_lock: Arc<Mutex<()>>,
 }
 
 impl FailureLogStore {
@@ -41,6 +46,8 @@ impl FailureLogStore {
             events: Arc::new(RwLock::new(Vec::new())),
 
             dirty_tx: None,
+            path: None,
+            flush_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -58,9 +65,11 @@ impl FailureLogStore {
             Vec::new()
         };
         let events = Arc::new(RwLock::new(events));
+        let flush_lock = Arc::new(Mutex::new(()));
         let (tx, mut rx) = mpsc::unbounded_channel();
         let events_clone = events.clone();
         let path_clone = path.clone();
+        let lock_clone = flush_lock.clone();
 
         tokio::spawn(async move {
             let mut dirty = false;
@@ -72,7 +81,7 @@ impl FailureLogStore {
                             Some(_) => dirty = true,
                             None => {
                                 if dirty
-                                    && let Err(e) = Self::save_internal(&events_clone, &path_clone).await {
+                                    && let Err(e) = Self::save_internal(&events_clone, &path_clone, &lock_clone).await {
                                         tracing::error!("Graceful shutdown failure log save failed: {}", e);
                                     }
                                 break;
@@ -81,7 +90,7 @@ impl FailureLogStore {
                     }
                     _ = interval.tick() => {
                         if dirty {
-                            if let Err(e) = Self::save_internal(&events_clone, &path_clone).await {
+                            if let Err(e) = Self::save_internal(&events_clone, &path_clone, &lock_clone).await {
                                 tracing::error!("Failed to save failure log: {}", e);
                             } else {
                                 dirty = false;
@@ -96,27 +105,44 @@ impl FailureLogStore {
             events,
 
             dirty_tx: Some(tx),
+            path: Some(path),
+            flush_lock,
         })
     }
 
     async fn save_internal(
         events: &Arc<RwLock<Vec<FailureEvent>>>,
         file_path: &Path,
+        lock: &Arc<Mutex<()>>,
     ) -> anyhow::Result<()> {
-        let content = {
-            let e = events.read();
-            serde_json::to_string(&*e)?
-        };
+        let events = events.clone();
         let path = file_path.to_path_buf();
+        let lock = lock.clone();
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(&path, content)?;
-            Ok(())
+            let _guard = lock.lock();
+            let content = serde_json::to_string(&*events.read())?;
+            Self::write_file(&path, &content)
         })
         .await??;
         Ok(())
+    }
+
+    fn write_file(path: &Path, content: &str) -> anyhow::Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        atomic_write(path, content.as_bytes())?;
+        Ok(())
+    }
+
+    /// 同步落盘（退出时调用）：后台任务 5s 一次的周期写之外，保证最后一批事件不丢
+    pub fn flush(&self) -> anyhow::Result<()> {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+        let _guard = self.flush_lock.lock();
+        let content = serde_json::to_string(&*self.events.read())?;
+        Self::write_file(path, &content)
     }
 
     /// 记录一次失败事件

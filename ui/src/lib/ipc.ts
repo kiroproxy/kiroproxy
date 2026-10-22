@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core"
+import { strings } from "./strings"
 import type {
   AccountsResponse,
   AddCredentialRequest,
   AddCredentialResponse,
-  AdminModelItem,
   ApiKeyView,
   AppInfo,
   ApplyResult,
@@ -13,41 +13,67 @@ import type {
   DailySummary,
   FailureLogPage,
   ImportOutcome,
+  IpcErrorShape,
   KamPreview,
   KiroIdePreview,
   LogEntry,
   LogKind,
+  ModelView,
+  OauthStatus,
   RpmSnapshot,
   RuntimeConfigPatch,
   ServerStatus,
   SettingsView,
+  TestConnectionRequest,
+  TestConnectionResult,
   ThrottleLogPage,
   UpdateApiKeyRequest,
   UpdateCredentialRequest,
+  UsageBreakdown,
   UsageFilter,
   UsageRecordsPage,
+  UpdateStatus,
   UsageSummary,
   VerifyOutcome,
 } from "./types"
 
-export interface IpcError {
-  code: string
-  message: string
+/** Rust 命令返回的结构化错误；继承 Error 以便 TanStack Query 与 toast 直接使用 message。 */
+export class IpcError extends Error {
+  readonly code: string
+
+  constructor(code: string, message: string) {
+    super(message)
+    this.name = "IpcError"
+    this.code = code
+  }
+}
+
+export function errorMessage(error: unknown, fallback: string = strings.errors.actionFailed): string {
+  if (error instanceof Error && error.message) return error.message
+  if (typeof error === "string" && error) return error
+  return fallback
+}
+
+export function hasTauri(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
 }
 
 export async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   try {
     return await invoke<T>(command, args)
   } catch (e) {
-    if (typeof e === "object" && e && "code" in e) throw e as IpcError
-    throw { code: "ipc_error", message: String(e) } satisfies IpcError
+    if (typeof e === "object" && e && "code" in e && "message" in e) {
+      const shape = e as IpcErrorShape
+      throw new IpcError(String(shape.code), String(shape.message))
+    }
+    throw new IpcError("ipc_error", String(e))
   }
 }
 
 export const ipc = {
   // 应用与服务器
   getAppInfo: () => call<AppInfo>("get_app_info"),
-  getStartupError: () => call<IpcError | null>("get_startup_error"),
+  getStartupError: () => call<IpcErrorShape | null>("get_startup_error"),
   getServerStatus: () => call<ServerStatus>("get_server_status"),
   startProxyServer: () => call<ServerStatus>("start_proxy_server"),
   stopProxyServer: () => call<ServerStatus>("stop_proxy_server"),
@@ -55,7 +81,6 @@ export const ipc = {
   retryStartup: () => call<ServerStatus>("retry_startup"),
   openDataDir: () => call<void>("open_data_dir"),
   openFile: (kind: "config" | "credentials" | "log") => call<void>("open_file", { kind }),
-  readTextFile: (path: string) => call<string>("read_text_file", { path }),
   clearLogs: () => call<void>("clear_logs"),
   quitApp: () => call<void>("quit_app"),
 
@@ -70,7 +95,8 @@ export const ipc = {
   setAccountPriority: (id: number, priority: number) =>
     call<void>("set_account_priority", { id, priority }),
   resetAccountFailure: (id: number) => call<void>("reset_account_failure", { id }),
-  getAccountBalance: (id: number) => call<BalanceResponse>("get_account_balance", { id }),
+  getAccountBalance: (id: number, force = false) =>
+    call<BalanceResponse>("get_account_balance", { id, force }),
   previewKamImport: (json: string) => call<KamPreview>("preview_kam_import", { json }),
   importKamAccounts: (json: string, verify: boolean) =>
     call<ImportOutcome>("import_kam_accounts", { json, verify }),
@@ -78,6 +104,11 @@ export const ipc = {
   cancelVerifyAccounts: () => call<void>("cancel_verify_accounts"),
   scanKiroIde: () => call<KiroIdePreview | null>("scan_kiro_ide"),
   importKiroIde: () => call<ImportOutcome>("import_kiro_ide"),
+  getOauthStatus: () => call<OauthStatus>("get_oauth_status"),
+  startBrowserLogin: (provider: "google" | "github") =>
+    call<OauthStatus>("start_browser_login", { provider }),
+  cancelBrowserLogin: () => call<OauthStatus>("cancel_browser_login"),
+  reopenLoginPage: () => call<void>("reopen_login_page"),
 
   // API Key
   listApiKeys: () => call<ApiKeyView[]>("list_api_keys"),
@@ -97,6 +128,8 @@ export const ipc = {
   getDailyUsageRecords: (date: string, page: number, pageSize: number) =>
     call<UsageRecordsPage>("get_daily_usage_records", { date, page, pageSize }),
   getUsageRecords: (filter: UsageFilter) => call<UsageRecordsPage>("get_usage_records", { filter }),
+  getUsageBreakdown: (from: string, to: string) =>
+    call<UsageBreakdown>("get_usage_breakdown", { from, to }),
   getCredentialUsageRecords: (credentialId: number, page: number, pageSize: number) =>
     call<UsageRecordsPage>("get_credential_usage_records", { credentialId, page, pageSize }),
   getCredentialTodaySummary: (credentialId: number) =>
@@ -105,12 +138,12 @@ export const ipc = {
 
   // 日志
   getLogSnapshot: () => call<LogEntry[]>("get_log_snapshot"),
-  getThrottleLogs: (credentialId?: number) =>
-    call<ThrottleLogPage>("get_throttle_logs", { credentialId }),
-  getFailureLogs: (credentialId?: number) =>
-    call<FailureLogPage>("get_failure_logs", { credentialId }),
-  exportLogs: (kind: LogKind, destPath: string) =>
-    call<string>("export_logs", { kind, destPath }),
+  getThrottleLogs: (credentialId: number | undefined, page: number, pageSize: number) =>
+    call<ThrottleLogPage>("get_throttle_logs", { credentialId, page, pageSize }),
+  getFailureLogs: (credentialId: number | undefined, page: number, pageSize: number) =>
+    call<FailureLogPage>("get_failure_logs", { credentialId, page, pageSize }),
+  /** 由 Rust 弹出保存对话框；返回保存路径，用户取消时为 null。 */
+  exportLogs: (kind: LogKind) => call<string | null>("export_logs", { kind }),
 
   // 设置
   getSettings: () => call<SettingsView>("get_settings"),
@@ -134,8 +167,16 @@ export const ipc = {
     call<ApplyResult>("set_write_chunking_max_lines", { value }),
   setRuntimeConfig: (patch: RuntimeConfigPatch) =>
     call<ApplyResult>("set_runtime_config", { patch }),
+  testConnection: (req: TestConnectionRequest) =>
+    call<TestConnectionResult>("test_connection", { req }),
+
+  // 软件更新
+  getUpdateStatus: () => call<UpdateStatus>("get_update_status"),
+  checkForUpdate: () => call<UpdateStatus>("check_for_update"),
+  installUpdate: () => call<void>("install_update"),
+  openUpdatePage: () => call<void>("open_update_page"),
 
   // 模型
-  listModels: () => call<AdminModelItem[]>("list_models"),
-  getAccountModels: (id: number) => call<AdminModelItem[]>("get_account_models", { id }),
+  listModels: () => call<ModelView[]>("list_models"),
+  getAccountModels: (id: number) => call<ModelView[]>("get_account_models", { id }),
 }

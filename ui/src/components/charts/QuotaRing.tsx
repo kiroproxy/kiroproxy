@@ -1,45 +1,59 @@
+import { quotaTone } from "@/lib/account-status"
+import { fmtPercent } from "@/lib/format"
+import { strings } from "@/lib/strings"
+
+const toneStroke = {
+  quota: "var(--quota)",
+  warning: "var(--warning)",
+  danger: "var(--danger)",
+} as const
+
 export interface QuotaRingProps {
   size?: number
-  fiveHour: number
-  sevenDay: number
+  /** 本月已用百分比（0–100）。 */
+  percent: number
 }
 
 /**
- * 账号额度双环：外环 5 小时、内环 7 天。
- * 数值为已用百分比（0–100），达到 90% 转 warning，用尽转 danger。
+ * 月度额度环：Kiro 只有自然月额度，没有 5 小时 / 7 天窗口，所以是单环。
+ * 达到 90% 换 warning，用尽换 danger；圆心写百分比，旁边仍需文字说明。
  */
-export function QuotaRing({ size = 112, fiveHour, sevenDay }: QuotaRingProps) {
-  const sw = size > 60 ? 10 : 3.6
-  const r1 = size / 2 - sw / 2
-  const r2 = r1 - sw - (size > 60 ? 4 : 1.8)
+export function QuotaRing({ size = 112, percent }: QuotaRingProps) {
+  const stroke = size > 60 ? 10 : 4
+  const radius = size / 2 - stroke / 2
+  const value = Math.min(Math.max(percent, 0), 100)
   return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90">
-      {[
-        { r: r1, v: fiveHour, stroke: "var(--quota)" },
-        { r: r2, v: sevenDay, stroke: "var(--quota-muted)" },
-      ].map((ring, i) => (
-        <g key={i}>
-          <circle
-            cx={size / 2}
-            cy={size / 2}
-            r={ring.r}
-            fill="none"
-            stroke="var(--quota-track)"
-            strokeWidth={sw}
-          />
-          <circle
-            cx={size / 2}
-            cy={size / 2}
-            r={ring.r}
-            fill="none"
-            stroke={ring.v >= 100 ? "var(--danger)" : ring.v >= 90 ? "var(--warning)" : ring.stroke}
-            strokeWidth={sw}
-            strokeLinecap="round"
-            pathLength={100}
-            strokeDasharray={`${Math.min(Math.max(ring.v, 0), 100)} 100`}
-          />
-        </g>
-      ))}
-    </svg>
+    <div
+      className="relative grid shrink-0 place-items-center"
+      style={{ width: size, height: size }}
+      role="img"
+      aria-label={strings.a11y.quotaRing(fmtPercent(percent))}
+    >
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90">
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke="var(--quota-track)"
+          strokeWidth={stroke}
+        />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke={toneStroke[quotaTone(percent)]}
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          pathLength={100}
+          strokeDasharray={`${value} 100`}
+          className="transition-[stroke-dasharray] duration-300"
+        />
+      </svg>
+      <span className="num absolute text-[20px] font-semibold tracking-[-0.01em]">
+        {fmtPercent(percent)}
+      </span>
+    </div>
   )
 }

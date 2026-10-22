@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Harllan He. Licensed under MIT.
+// Copyright (c) 2026 pigcursor. Licensed under MIT.
 
 //! 从本机 Kiro IDE 的 AWS SSO 缓存读取登录凭据。
 //!

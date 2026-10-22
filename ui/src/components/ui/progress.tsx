@@ -1,12 +1,19 @@
 import { Progress as ProgressPrimitive } from "@base-ui/react/progress"
 import { cn } from "@/lib/utils"
 
+const toneClass = {
+  quota: "bg-quota",
+  warning: "bg-warning",
+  danger: "bg-danger",
+} as const
+
 function Progress({
   className,
   children,
   value,
+  tone = "quota",
   ...props
-}: ProgressPrimitive.Root.Props) {
+}: ProgressPrimitive.Root.Props & { tone?: keyof typeof toneClass }) {
   return (
     <ProgressPrimitive.Root
       value={value}
@@ -16,7 +23,7 @@ function Progress({
     >
       {children}
       <ProgressTrack>
-        <ProgressIndicator />
+        <ProgressIndicator className={toneClass[tone]} />
       </ProgressTrack>
     </ProgressPrimitive.Root>
   )
@@ -42,7 +49,7 @@ function ProgressIndicator({
   return (
     <ProgressPrimitive.Indicator
       data-slot="progress-indicator"
-      className={cn("h-full bg-quota transition-all", className)}
+      className={cn("h-full bg-quota transition-[width] duration-300", className)}
       {...props}
     />
   )

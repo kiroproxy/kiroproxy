@@ -1,42 +1,88 @@
-import { accountQuota, quotaLabel } from "@/lib/account-status"
+import { hasQuota, quotaTone } from "@/lib/account-status"
+import { fmtNumber, fmtPercent } from "@/lib/format"
+import { useAccountBalance } from "@/lib/queries"
 import { strings } from "@/lib/strings"
 import { cn } from "@/lib/utils"
-import type { CredentialStatusItem } from "@/lib/types"
+import type { BalanceResponse } from "@/lib/types"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
-function barTone(value: number | null): string {
-  if (value === null) return "bg-faint/40"
-  if (value >= 100) return "bg-danger"
-  if (value >= 90) return "bg-warning"
-  return "bg-quota"
+const toneClass = {
+  quota: "bg-quota",
+  warning: "bg-warning",
+  danger: "bg-danger",
+} as const
+
+function resetDate(balance: BalanceResponse): string | null {
+  if (!balance.nextResetAt) return null
+  return new Date(balance.nextResetAt * 1000).toLocaleDateString("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+  })
 }
 
-function QuotaBar({ label, value }: { label: string; value: number | null }) {
-  return (
-    <div className="flex items-center gap-1.5">
-      <span className="w-4 shrink-0 text-[10px] text-faint">{label}</span>
-      <span className="relative h-1.5 w-12 overflow-hidden rounded-full bg-quota-track">
+/** 月度额度条：使用率进度 + 「已用 / 限额」，悬停显示重置日期。 */
+export function QuotaBar({ balance, className }: { balance: BalanceResponse; className?: string }) {
+  const percent = Math.min(Math.max(balance.usagePercentage, 0), 100)
+  const reset = resetDate(balance)
+  const bar = (
+    <div className={cn("flex min-w-[150px] flex-col gap-1", className)}>
+      <div className="flex items-baseline justify-between gap-2 text-[11.5px]">
+        <span className="num font-medium">
+          {strings.accounts.quotaUsedOf(
+            fmtNumber(Math.round(balance.currentUsage)),
+            fmtNumber(Math.round(balance.usageLimit)),
+          )}
+        </span>
+        <span className="num text-muted-foreground">{fmtPercent(balance.usagePercentage)}</span>
+      </div>
+      <div
+        className="relative h-1.5 w-full overflow-hidden rounded-full bg-quota-track"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(percent)}
+        aria-label={strings.a11y.quotaRing(fmtPercent(balance.usagePercentage))}
+      >
         <span
-          className={cn("absolute inset-y-0 left-0 rounded-full", barTone(value))}
-          style={{ width: `${value === null ? 0 : Math.min(value, 100)}%` }}
+          className={cn(
+            "absolute inset-y-0 left-0 rounded-full transition-[width] duration-300",
+            toneClass[quotaTone(balance.usagePercentage)],
+          )}
+          style={{ width: `${percent}%` }}
         />
-      </span>
-      <span className="num w-8 text-right text-[11px] text-muted-foreground">
-        {quotaLabel(value)}
-      </span>
+      </div>
     </div>
+  )
+  if (!reset) return bar
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<div />}>{bar}</TooltipTrigger>
+      <TooltipContent>{strings.accounts.quotaResetHint(reset)}</TooltipContent>
+    </Tooltip>
   )
 }
 
-export function AccountQuotaBars({ item }: { item: CredentialStatusItem }) {
-  const quota = accountQuota(item)
-  const unknown = quota.fiveHour === null && quota.sevenDay === null
-  return (
-    <div
-      className="flex flex-col gap-1"
-      title={unknown ? strings.overview.quotaUnknown : undefined}
-    >
-      <QuotaBar label="5h" value={quota.fiveHour} />
-      <QuotaBar label="7d" value={quota.sevenDay} />
-    </div>
-  )
+/** 账号列表里的本月额度单元格：自己查询余额（后端缓存 5 分钟）。 */
+export function AccountQuotaCell({ id, enabled = true }: { id: number; enabled?: boolean }) {
+  const balance = useAccountBalance(id, enabled)
+  if (!enabled && !balance.data) {
+    return (
+      <span className="text-[11.5px] text-muted-foreground" title={strings.accounts.quotaSkipped}>
+        —
+      </span>
+    )
+  }
+  if (balance.isLoading) return <Skeleton className="h-6 w-[150px]" />
+  if (balance.isError) {
+    return (
+      <span className="text-[11.5px] text-muted-foreground" title={balance.error.message}>
+        {strings.accounts.quotaFailed}
+      </span>
+    )
+  }
+  if (!hasQuota(balance.data)) {
+    return <span className="text-[11.5px] text-muted-foreground">{strings.accounts.quotaUnsupported}</span>
+  }
+  return <QuotaBar balance={balance.data} />
 }

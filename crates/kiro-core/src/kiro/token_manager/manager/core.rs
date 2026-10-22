@@ -44,10 +44,13 @@ impl MultiTokenManager {
         let max_existing_id = credentials.iter().filter_map(|c| c.id).max().unwrap_or(0);
         let persisted_max_id = Self::load_id_counter_from_path(credentials_path.as_deref());
         let starting_max_id = max_existing_id.max(persisted_max_id);
-        // checked_add 防御：ID 计数器逼近 u64::MAX 时报错而非静默回绕（cr-result C7）
-        let mut next_id = starting_max_id
-            .checked_add(1)
-            .expect("credential id 计数器溢出（u64::MAX），credentials.json 异常");
+        // checked_add 防御：ID 计数器逼近 u64::MAX 时报错而非静默回绕（cr-result C7）。
+        // id 来自用户可编辑的 credentials.json，必须返回错误而不是 panic（启动路径）
+        let mut next_id = starting_max_id.checked_add(1).ok_or_else(|| {
+            anyhow::anyhow!(
+                "credential id 计数器溢出（u64::MAX），请检查 credentials.json 中的 id 字段"
+            )
+        })?;
         let mut has_new_ids = false;
         let mut has_new_machine_ids = false;
         let mut has_new_profile_arns = false;
@@ -55,17 +58,22 @@ impl MultiTokenManager {
 
         let entries: Vec<CredentialEntry> = credentials
             .into_iter()
-            .map(|mut cred| {
+            .map(|mut cred| -> anyhow::Result<CredentialEntry> {
                 cred.canonicalize_auth_method();
-                let id = cred.id.unwrap_or_else(|| {
-                    let id = next_id;
-                    next_id = next_id
-                        .checked_add(1)
-                        .expect("credential id 计数器溢出（u64::MAX），请检查 credentials.json 中的 id 字段");
-                    cred.id = Some(id);
-                    has_new_ids = true;
-                    id
-                });
+                let id = match cred.id {
+                    Some(id) => id,
+                    None => {
+                        let id = next_id;
+                        next_id = next_id.checked_add(1).ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "credential id 计数器溢出（u64::MAX），请检查 credentials.json 中的 id 字段"
+                            )
+                        })?;
+                        cred.id = Some(id);
+                        has_new_ids = true;
+                        id
+                    }
+                };
                 if cred.machine_id.is_none() {
                     cred.machine_id =
                         Some(machine_id::generate_from_credentials(&cred, config_ref));
@@ -76,7 +84,7 @@ impl MultiTokenManager {
                 if cred.fill_missing_profile_arn() {
                     has_new_profile_arns = true;
                 }
-                CredentialEntry {
+                Ok(CredentialEntry {
                     id,
                     credentials: cred.clone(),
                     failure_count: 0,
@@ -98,9 +106,9 @@ impl MultiTokenManager {
                     last_refreshed_at: None,
                     rotation_bias: 0,
                     quota_exhausted_at: None,
-                }
+                })
             })
-            .collect();
+            .collect::<anyhow::Result<_>>()?;
 
         // 检测重复 ID
         let mut seen_ids = std::collections::HashSet::new();
@@ -157,6 +165,8 @@ impl MultiTokenManager {
             max_rpm_per_credential: AtomicU32::new(max_rpm),
             model_support: Mutex::new(HashMap::new()),
             model_support_refresh_lock: TokioMutex::new(()),
+            retired: AtomicBool::new(false),
+            config_writes_enabled: AtomicBool::new(true),
         };
 
         // 持久化历史最大 ID 计数器（即使本次没有新增账号，也要确保计数器文件与内存一致，
@@ -184,6 +194,32 @@ impl MultiTokenManager {
     /// 获取配置的引用
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// 标记为已退役：代理运行时重建后，旧实例只服务在途请求，不再写任何持久化文件。
+    ///
+    /// 退役本身不落盘：接替的新实例已从磁盘加载状态并开始写入，此时再写旧快照会覆盖它。
+    /// 需要保留的统计应在构建新实例之前调用 `flush` 写出。
+    pub fn retire(&self) {
+        self.retired.store(true, Ordering::SeqCst);
+    }
+
+    /// 是否已退役
+    pub fn is_retired(&self) -> bool {
+        self.retired.load(Ordering::SeqCst)
+    }
+
+    /// 立即落盘防抖中的统计数据（退出 / 退役前调用；已退役时为空操作）
+    pub fn flush(&self) {
+        if self.stats_dirty.load(Ordering::Relaxed) {
+            self.save_stats();
+        }
+    }
+
+    /// 关闭本实例对 config.json 的写入：负载均衡模式只改运行时状态，
+    /// 持久化交给外层（桌面端的 ConfigStore），避免两个写入方互相覆盖
+    pub fn disable_config_writes(&self) {
+        self.config_writes_enabled.store(false, Ordering::SeqCst);
     }
 
     /// 获取每账号 RPM 上限（运行时热切换后的当前值；0 = 不限）

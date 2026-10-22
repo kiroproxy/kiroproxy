@@ -6,7 +6,7 @@
 
 use crate::common::fs::atomic_write;
 use chrono::{DateTime, Utc};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -177,11 +177,14 @@ pub struct UsageTracker {
     lifetime_keys: Arc<RwLock<HashMap<u32, LifetimeTotals>>>,
     /// 生命周期累计（裁剪前基数），按 credential_id 分组
     lifetime_credentials: Arc<RwLock<HashMap<u64, LifetimeTotals>>>,
-    /// 累计计数落盘路径（仅后台任务持有；None = 记忆态，如测试场景）
-    #[allow(dead_code)]
+    /// 累计计数落盘路径（None = 记忆态，如测试场景）
     lifetime_path: Option<PathBuf>,
     /// 累计计数脏标记：仅裁剪发生（基数变化）时置位，由后台任务周期落盘
     lifetime_dirty: Arc<AtomicBool>,
+    /// 明细落盘路径
+    path: PathBuf,
+    /// 串行化「序列化 + 写盘」：后台周期写与退出时的 flush 不会以旧快照覆盖新快照
+    flush_lock: Arc<Mutex<()>>,
 }
 
 impl UsageTracker {
@@ -245,14 +248,15 @@ impl UsageTracker {
         let lifetime_keys = Arc::new(RwLock::new(lifetime_keys));
         let lifetime_credentials = Arc::new(RwLock::new(lifetime_credentials));
         let lifetime_keys_task = lifetime_keys.clone();
-        let lifetime_credentials_task = lifetime_credentials.clone();
         let lifetime_path_task = lifetime_path.clone();
+        let flush_lock = Arc::new(Mutex::new(()));
+        let flush_lock_task = flush_lock.clone();
 
         // 启动后台异步写入任务，避免同步文件写阻塞请求线程
         tokio::spawn(async move {
             let lifetime_keys = lifetime_keys_task;
-            let lifetime_credentials = lifetime_credentials_task;
             let lifetime_path = lifetime_path_task;
+            let lock = flush_lock_task;
             let mut dirty = false;
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {
@@ -263,12 +267,12 @@ impl UsageTracker {
                         None => {
                                 // 通道已关闭（系统退出），执行 Graceful Shutdown 刷盘
                                 if dirty
-                                    && let Err(e) = Self::save_internal(&records_clone, &path_clone).await {
+                                    && let Err(e) = Self::save_internal(&records_clone, &path_clone, &lock).await {
                                         tracing::error!("Graceful shutdown usage save failed: {}", e);
                                     }
                                 if lifetime_dirty.swap(false, Ordering::Relaxed)
                                     && let Err(e) = Self::save_lifetime_internal(
-                                        &lifetime_keys, &lifetime_credentials, &lifetime_path,
+                                        &lifetime_keys, &lifetime_path, &lock,
                                     ).await
                                 {
                                     tracing::error!("Graceful shutdown lifetime save failed: {}", e);
@@ -280,7 +284,7 @@ impl UsageTracker {
                     _ = interval.tick() => {
                         // 明细刷盘成功才清 dirty，失败则下个周期重试
                         if dirty {
-                            if let Err(e) = Self::save_internal(&records_clone, &path_clone).await {
+                            if let Err(e) = Self::save_internal(&records_clone, &path_clone, &lock).await {
                                 tracing::error!("Failed to save usage: {}", e);
                             } else {
                                 dirty = false;
@@ -291,7 +295,7 @@ impl UsageTracker {
                         // 由下个周期重试（否则该次基数变化将永久丢失）
                         if lifetime_dirty.swap(false, Ordering::Relaxed)
                             && let Err(e) = Self::save_lifetime_internal(
-                                &lifetime_keys, &lifetime_credentials, &lifetime_path,
+                                &lifetime_keys, &lifetime_path, &lock,
                             ).await
                         {
                             lifetime_dirty.store(true, Ordering::Relaxed);
@@ -310,33 +314,44 @@ impl UsageTracker {
             lifetime_credentials,
             lifetime_path,
             lifetime_dirty: lifetime_dirty_clone,
+            path,
+            flush_lock,
         })
     }
 
     /// 生命周期累计落盘（异步）：仅记录裁剪前基数，不含现存明细
     async fn save_lifetime_internal(
         lifetime_keys: &Arc<RwLock<HashMap<u32, LifetimeTotals>>>,
-        _lifetime_credentials: &Arc<RwLock<HashMap<u64, LifetimeTotals>>>,
         path: &Option<PathBuf>,
+        lock: &Arc<Mutex<()>>,
     ) -> anyhow::Result<()> {
-        let Some(path) = path else {
+        let Some(path) = path.clone() else {
             return Ok(());
         };
-        // JSON 对象键不支持数字，存为 str(id)；credential 侧暂不落盘
-        // （credential 仅用于账号维度统计，key 侧请求数才是 UI 展示口径）
+        let keys = lifetime_keys.clone();
+        let lock = lock.clone();
+        tokio::task::spawn_blocking(move || {
+            let _guard = lock.lock();
+            Self::write_lifetime(&keys, &path)
+        })
+        .await??;
+        Ok(())
+    }
+
+    /// 累计基数写盘（同步）。JSON 对象键不支持数字，存为 str(id)；credential 侧暂不落盘
+    /// （credential 仅用于账号维度统计，key 侧请求数才是 UI 展示口径）
+    fn write_lifetime(
+        lifetime_keys: &RwLock<HashMap<u32, LifetimeTotals>>,
+        path: &Path,
+    ) -> anyhow::Result<()> {
         let map = lifetime_keys.read().clone();
         let raw: HashMap<String, LifetimeTotals> =
             map.into_iter().map(|(id, v)| (id.to_string(), v)).collect();
         let content = serde_json::to_string(&raw)?;
-        let path = path.clone();
-        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            atomic_write(&path, content.as_bytes())?;
-            Ok(())
-        })
-        .await??;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        atomic_write(path, content.as_bytes())?;
         Ok(())
     }
 
@@ -344,20 +359,40 @@ impl UsageTracker {
     async fn save_internal(
         records: &Arc<RwLock<Vec<UsageRecord>>>,
         file_path: &Path,
+        lock: &Arc<Mutex<()>>,
     ) -> anyhow::Result<()> {
-        let content = {
-            let r = records.read();
-            serde_json::to_string(&*r)?
-        };
+        let records = records.clone();
         let path = file_path.to_path_buf();
-        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(&path, content)?;
-            Ok(())
+        let lock = lock.clone();
+        tokio::task::spawn_blocking(move || {
+            let _guard = lock.lock();
+            Self::write_records(&records, &path)
         })
         .await??;
+        Ok(())
+    }
+
+    /// 明细写盘（同步，原子替换 + 0600）
+    fn write_records(records: &RwLock<Vec<UsageRecord>>, path: &Path) -> anyhow::Result<()> {
+        let content = serde_json::to_string(&*records.read())?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        atomic_write(path, content.as_bytes())?;
+        Ok(())
+    }
+
+    /// 同步落盘明细与累计基数（退出时调用；后台任务每 5s 才写一次）
+    pub fn flush(&self) -> anyhow::Result<()> {
+        let _guard = self.flush_lock.lock();
+        Self::write_records(&self.records, &self.path)?;
+        if let Some(path) = &self.lifetime_path
+            && self.lifetime_dirty.swap(false, Ordering::Relaxed)
+            && let Err(e) = Self::write_lifetime(&self.lifetime_keys, path)
+        {
+            self.lifetime_dirty.store(true, Ordering::Relaxed);
+            return Err(e);
+        }
         Ok(())
     }
 
@@ -629,9 +664,11 @@ mod pricing;
 mod tests;
 
 #[allow(unused_imports)] // 类型归属 daily.rs，经 mod 再导出保持原模块路径
-pub use daily::{CredentialDaySummary, DailySummary};
+pub use daily::{
+    CredentialDaySummary, DailySummary, DayModelBreakdown, ModelBreakdown, UsageBreakdown,
+};
 #[allow(unused_imports)]
-pub use pagination::{UsageRecordItem, UsageRecordsPage};
+pub use pagination::{UsageRecordFilter, UsageRecordItem, UsageRecordsPage};
 #[allow(unused_imports)]
 pub(crate) use pricing::{ModelPricing, get_model_pricing};
 pub(crate) use pricing::{calculate_cost, get_k_ref};

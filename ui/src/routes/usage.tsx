@@ -1,83 +1,31 @@
-import { useMemo, useState } from "react"
-import { CalendarIcon } from "lucide-react"
-import type { DateRange } from "react-day-picker"
-import { Button } from "@/components/ui/button"
-import { Calendar } from "@/components/ui/calendar"
-import { Card, CardContent } from "@/components/ui/card"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { fmtCost, fmtDateTime, fmtDuration, fmtNumber } from "@/lib/format"
-import { useDailyUsage, useUsageRecords } from "@/lib/queries"
+import { lazy, Suspense, useMemo, useState } from "react"
+import { ReceiptTextIcon } from "lucide-react"
+import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
+import { Skeleton } from "@/components/ui/skeleton"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { DailyBarChart, type BarSeries, type DailyBar } from "@/components/charts/DailyBarChart"
+import { LoadError } from "@/components/shell/LoadError"
+import { Pager } from "@/components/shell/Pager"
+import { ModelBreakdownList } from "@/components/usage/ModelBreakdownList"
+import { UsageRecordsTable } from "@/components/usage/UsageRecordsTable"
+import { dateRange, fmtCost, fmtCredits, fmtNumber, shiftDays } from "@/lib/format"
+import { useDailyUsage, useUsageBreakdown, useUsageRecords } from "@/lib/queries"
 import { strings } from "@/lib/strings"
+import { OTHER_COLOR, seriesColor } from "@/lib/usage"
+
+const DateRangePicker = lazy(() => import("@/components/usage/DateRangePicker"))
 
 type RangeKey = "today" | "7d" | "30d" | "custom"
+type ChartMode = "total" | "model"
 
-function localDate(date: Date): string {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, "0")
-  const day = String(date.getDate()).padStart(2, "0")
-  return `${year}-${month}-${day}`
-}
-
-function shiftDays(days: number): string {
-  const date = new Date()
-  date.setDate(date.getDate() + days)
-  return localDate(date)
-}
-
-function parseYmd(value: string): Date {
-  const [year, month, day] = value.split("-").map(Number)
-  return new Date(year, (month ?? 1) - 1, day ?? 1)
-}
-
-function DateRangePicker({
-  from,
-  to,
-  onChange,
-}: {
-  from: string
-  to: string
-  onChange: (from: string, to: string) => void
-}) {
-  const [open, setOpen] = useState(false)
-  const selected: DateRange = { from: parseYmd(from), to: parseYmd(to) }
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger
-        render={
-          <Button variant="secondary" size="sm" className="gap-2">
-            <CalendarIcon />
-            <span className="num">
-              {from} → {to}
-            </span>
-          </Button>
-        }
-      />
-      <PopoverContent className="w-auto p-0" align="start">
-        <Calendar
-          mode="range"
-          selected={selected}
-          onSelect={(next: DateRange | undefined) => {
-            if (!next?.from) return
-            const nextFrom = localDate(next.from)
-            const nextTo = next.to ? localDate(next.to) : nextFrom
-            onChange(nextFrom, nextTo)
-            if (next.to) setOpen(false)
-          }}
-          numberOfMonths={2}
-        />
-      </PopoverContent>
-    </Popover>
-  )
-}
+const MAX_MODEL_SERIES = 4
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0">
-      <div className="text-[11px] text-muted-foreground">{label}</div>
-      <div className="num text-[23px] font-bold leading-tight">{value}</div>
+      <div className="text-[11.5px] text-muted-foreground">{label}</div>
+      <div className="num truncate text-[23px] leading-tight font-semibold tracking-[-0.01em]">{value}</div>
     </div>
   )
 }
@@ -86,6 +34,7 @@ export function UsagePage() {
   const [range, setRange] = useState<RangeKey>("7d")
   const [customFrom, setCustomFrom] = useState(shiftDays(-6))
   const [customTo, setCustomTo] = useState(shiftDays(0))
+  const [chartMode, setChartMode] = useState<ChartMode>("total")
   const [page, setPage] = useState(1)
 
   const { from, to } = useMemo(() => {
@@ -96,166 +45,210 @@ export function UsagePage() {
   }, [customFrom, customTo, range])
 
   const daily = useDailyUsage()
+  const breakdown = useUsageBreakdown(from, to)
   const records = useUsageRecords({ from, to, page, pageSize: 50 })
 
-  const days = useMemo(
-    () =>
-      (daily.data ?? [])
-        .filter((item) => item.date >= from && item.date <= to)
-        .sort((a, b) => a.date.localeCompare(b.date)),
-    [daily.data, from, to],
+  const days = useMemo(() => dateRange(from, to), [from, to])
+
+  const totals = useMemo(() => {
+    const rows = (daily.data ?? []).filter((item) => item.date >= from && item.date <= to)
+    return rows.reduce(
+      (acc, item) => ({
+        requests: acc.requests + item.totalRequests,
+        input: acc.input + item.totalInputTokens,
+        output: acc.output + (item.totalOutputTokens ?? 0),
+        cache: acc.cache + item.totalCacheReadTokens,
+        cost: acc.cost + item.totalCost,
+        credits: acc.credits + item.totalCredits,
+      }),
+      { requests: 0, input: 0, output: 0, cache: 0, cost: 0, credits: 0 },
+    )
+  }, [daily.data, from, to])
+
+  const topModels = useMemo(
+    () => (breakdown.data?.byModel ?? []).slice(0, MAX_MODEL_SERIES).map((item) => item.model),
+    [breakdown.data],
   )
 
-  const totals = useMemo(
-    () =>
-      days.reduce(
-        (acc, item) => ({
-          requests: acc.requests + item.totalRequests,
-          input: acc.input + item.totalInputTokens,
-          cache: acc.cache + item.totalCacheReadTokens,
-          cost: acc.cost + item.totalCost,
-          credits: acc.credits + item.totalCredits,
-        }),
-        { requests: 0, input: 0, cache: 0, cost: 0, credits: 0 },
-      ),
-    [days],
-  )
+  const { bars, series } = useMemo(() => {
+    const byDate = new Map((daily.data ?? []).map((item) => [item.date, item]))
+    if (chartMode === "total") {
+      const data: DailyBar[] = days.map((date) => ({
+        date: date.slice(5),
+        requests: byDate.get(date)?.totalRequests ?? null,
+      }))
+      const totalSeries: BarSeries[] = [
+        { key: "requests", label: strings.usage.requests, color: "var(--chart-1)" },
+      ]
+      return { bars: data, series: totalSeries }
+    }
+    const perDay = new Map<string, Map<string, number>>()
+    for (const row of breakdown.data?.byDayModel ?? []) {
+      const key = topModels.includes(row.model) ? row.model : "__other"
+      const day = perDay.get(row.date) ?? new Map<string, number>()
+      day.set(key, (day.get(key) ?? 0) + row.requests)
+      perDay.set(row.date, day)
+    }
+    const keys = [...topModels]
+    const hasOther = (breakdown.data?.byModel ?? []).length > topModels.length
+    if (hasOther) keys.push("__other")
+    const data: DailyBar[] = days.map((date) => {
+      const day = perDay.get(date)
+      const point: DailyBar = { date: date.slice(5) }
+      keys.forEach((key, index) => {
+        point[`m${index}`] = day ? (day.get(key) ?? 0) : null
+      })
+      return point
+    })
+    const modelSeries: BarSeries[] = keys.map((key, index) => ({
+      key: `m${index}`,
+      label: key === "__other" ? strings.usage.other : key,
+      color: key === "__other" ? OTHER_COLOR : seriesColor(index),
+    }))
+    return { bars: data, series: modelSeries }
+  }, [breakdown.data, chartMode, daily.data, days, topModels])
 
-  const maxRequests = Math.max(1, ...days.map((item) => item.totalRequests))
-  const totalPages = records.data?.totalPages ?? 1
+  const average = days.length > 1 ? Math.round(totals.requests / days.length) : undefined
+  const hasData = totals.requests > 0
 
   return (
     <section aria-label={strings.usage.title} className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
-        <Tabs
-          value={range}
-          onValueChange={(value) => {
-            setRange(String(value) as RangeKey)
+        <ToggleGroup
+          variant="filter"
+          value={[range]}
+          onValueChange={(next) => {
+            if (!next[0]) return
+            setRange(next[0] as RangeKey)
             setPage(1)
           }}
+          aria-label={strings.usage.pickRange}
         >
-          <TabsList>
-            <TabsTrigger value="today">{strings.usage.today}</TabsTrigger>
-            <TabsTrigger value="7d">{strings.usage.sevenDays}</TabsTrigger>
-            <TabsTrigger value="30d">{strings.usage.thirtyDays}</TabsTrigger>
-            <TabsTrigger value="custom">{strings.usage.custom}</TabsTrigger>
-          </TabsList>
-        </Tabs>
+          <ToggleGroupItem value="today">{strings.usage.today}</ToggleGroupItem>
+          <ToggleGroupItem value="7d">{strings.usage.sevenDays}</ToggleGroupItem>
+          <ToggleGroupItem value="30d">{strings.usage.thirtyDays}</ToggleGroupItem>
+          <ToggleGroupItem value="custom">{strings.usage.custom}</ToggleGroupItem>
+        </ToggleGroup>
         {range === "custom" ? (
-          <DateRangePicker
-            from={customFrom}
-            to={customTo}
-            onChange={(nextFrom, nextTo) => {
-              setCustomFrom(nextFrom)
-              setCustomTo(nextTo)
-              setPage(1)
-            }}
-          />
+          <Suspense fallback={<Skeleton className="h-[26px] w-48 rounded-full" />}>
+            <DateRangePicker
+              from={customFrom}
+              to={customTo}
+              onChange={(nextFrom, nextTo) => {
+                setCustomFrom(nextFrom)
+                setCustomTo(nextTo)
+                setPage(1)
+              }}
+            />
+          </Suspense>
         ) : null}
       </div>
 
-      <Card>
-        <CardContent className="grid grid-cols-2 gap-4 pt-1 md:grid-cols-5">
-          <Metric label={strings.usage.requests} value={fmtNumber(totals.requests)} />
-          <Metric label={strings.usage.inputTokens} value={fmtNumber(totals.input)} />
-          <Metric label={strings.usage.cacheRead} value={fmtNumber(totals.cache)} />
-          <Metric label={strings.usage.cost} value={fmtCost(totals.cost)} />
-          <Metric label={strings.usage.credits} value={fmtNumber(totals.credits)} />
-        </CardContent>
+      <Card className="grid grid-cols-3 gap-4 p-4 md:grid-cols-6">
+        <Metric label={strings.usage.requests} value={fmtNumber(totals.requests)} />
+        <Metric label={strings.usage.inputTokens} value={fmtNumber(totals.input)} />
+        <Metric label={strings.usage.outputTokens} value={fmtNumber(totals.output)} />
+        <Metric label={strings.usage.cacheRead} value={fmtNumber(totals.cache)} />
+        <Metric label={strings.usage.credits} value={fmtCredits(totals.credits)} />
+        <Metric label={strings.usage.cost} value={fmtCost(totals.cost)} />
       </Card>
 
-      <Card>
-        <CardContent className="flex h-40 items-end gap-1.5 pt-1">
-          {days.length === 0 ? (
-            <span className="self-center text-[12px] text-muted-foreground">
-              {strings.common.empty}
-            </span>
-          ) : null}
-          {days.map((item) => (
-            <div key={item.date} className="flex min-w-0 flex-1 flex-col items-center gap-1">
-              <span className="num text-[9.5px] text-muted-foreground">{item.totalRequests}</span>
-              <div
-                className="w-full rounded-t-[4px] bg-quota"
-                style={{ height: `${Math.max(4, (item.totalRequests / maxRequests) * 112)}px` }}
-                title={`${item.date} · ${item.totalRequests} 次 · ${fmtCost(item.totalCost)}`}
-              />
-              <span className="num text-[9px] text-faint">{item.date.slice(5)}</span>
+      <div className="grid gap-3 lg:grid-cols-[1.6fr_1fr]">
+        <Card className="gap-3 p-5">
+          <CardHeader className="grid-cols-[1fr_auto] items-center p-0">
+            <div>
+              <CardTitle>{strings.usage.dailyRequests}</CardTitle>
+              <CardDescription className="num mt-1">
+                {from} → {to}
+                {average ? ` · ${strings.usage.average} ${fmtNumber(average)}` : ""}
+              </CardDescription>
             </div>
-          ))}
-        </CardContent>
-      </Card>
+            <ToggleGroup
+              variant="filter"
+              value={[chartMode]}
+              onValueChange={(next) => {
+                if (next[0]) setChartMode(next[0] as ChartMode)
+              }}
+              aria-label={strings.usage.dailyRequests}
+            >
+              <ToggleGroupItem value="total">{strings.usage.total}</ToggleGroupItem>
+              <ToggleGroupItem value="model">{strings.usage.byModel}</ToggleGroupItem>
+            </ToggleGroup>
+          </CardHeader>
+          {daily.isLoading ? (
+            <Skeleton className="h-[220px] w-full" />
+          ) : hasData ? (
+            <>
+              <DailyBarChart
+                data={bars}
+                series={series}
+                average={chartMode === "total" ? average : undefined}
+                valueLabel={strings.usage.dailyRequests}
+              />
+              {series.length > 1 ? (
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11.5px] text-muted-foreground">
+                  {series.map((item) => (
+                    <span key={item.key} className="flex items-center gap-1.5">
+                      <span className="size-2 rounded-[2px]" style={{ backgroundColor: item.color }} />
+                      {item.label}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <div className="grid h-[220px] place-items-center text-[12.5px] text-muted-foreground">
+              {strings.usage.noData}
+            </div>
+          )}
+        </Card>
 
-      <div className="overflow-hidden rounded-[16px] border border-border bg-card">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>{strings.usage.columns.time}</TableHead>
-              <TableHead>{strings.usage.columns.account}</TableHead>
-              <TableHead>{strings.usage.columns.model}</TableHead>
-              <TableHead>{strings.usage.columns.tokens}</TableHead>
-              <TableHead>{strings.usage.columns.cost}</TableHead>
-              <TableHead>{strings.usage.columns.credits}</TableHead>
-              <TableHead>{strings.usage.columns.duration}</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {records.isLoading ? (
-              <TableRow>
-                <TableCell colSpan={7} className="text-center text-muted-foreground">
-                  {strings.common.loading}
-                </TableCell>
-              </TableRow>
-            ) : null}
-            {!records.isLoading && (records.data?.records.length ?? 0) === 0 ? (
-              <TableRow>
-                <TableCell colSpan={7} className="text-center text-muted-foreground">
-                  {strings.common.empty}
-                </TableCell>
-              </TableRow>
-            ) : null}
-            {records.data?.records.map((record, index) => (
-              <TableRow key={`${record.createdAt}-${index}`}>
-                <TableCell className="num text-muted-foreground">
-                  {fmtDateTime(record.createdAt)}
-                </TableCell>
-                <TableCell className="max-w-[140px] truncate">
-                  {record.credentialLabel ?? strings.usage.noAccount}
-                </TableCell>
-                <TableCell className="max-w-[180px] truncate font-medium">{record.model}</TableCell>
-                <TableCell className="num">
-                  {fmtNumber(record.inputTokens)} / {fmtNumber(record.outputTokens)} /{" "}
-                  {fmtNumber(record.cacheReadInputTokens ?? 0)}
-                </TableCell>
-                <TableCell className="num">{fmtCost(record.estimatedCost)}</TableCell>
-                <TableCell className="num">{fmtNumber(record.creditsUsed ?? 0)}</TableCell>
-                <TableCell className="num text-muted-foreground">
-                  {record.durationMs ? fmtDuration(record.durationMs / 1000) : "—"}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+        <Card className="gap-3 p-5">
+          <CardTitle>{strings.usage.modelBreakdown}</CardTitle>
+          {breakdown.isError ? (
+            <p className="text-[12px] text-text-danger">{breakdown.error.message}</p>
+          ) : breakdown.isLoading ? (
+            <div className="flex flex-col gap-3">
+              {Array.from({ length: 3 }, (_, index) => (
+                <Skeleton key={index} className="h-10 w-full" />
+              ))}
+            </div>
+          ) : (
+            <ModelBreakdownList items={breakdown.data?.byModel ?? []} />
+          )}
+        </Card>
       </div>
 
-      <div className="flex items-center justify-end gap-2 text-[12px] text-muted-foreground">
-        <span className="num">{strings.common.pageOf(page, totalPages)}</span>
-        <Button
-          variant="secondary"
-          size="sm"
-          disabled={page <= 1}
-          onClick={() => setPage((value) => Math.max(1, value - 1))}
-        >
-          {strings.common.prevPage}
-        </Button>
-        <Button
-          variant="secondary"
-          size="sm"
-          disabled={page >= totalPages}
-          onClick={() => setPage((value) => value + 1)}
-        >
-          {strings.common.nextPage}
-        </Button>
+      <div className="flex items-center justify-between pt-1">
+        <h2 className="font-serif text-[15px] font-semibold">{strings.usage.recordsTitle}</h2>
+        {records.isFetching && !records.isLoading ? (
+          <span className="text-[11.5px] text-muted-foreground">{strings.common.loading}</span>
+        ) : null}
       </div>
+      {records.isError ? (
+        <LoadError error={records.error} onRetry={() => void records.refetch()} />
+      ) : records.isLoading ? (
+        <Skeleton className="h-40 w-full rounded-[16px]" />
+      ) : (records.data?.records.length ?? 0) === 0 ? (
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <ReceiptTextIcon />
+            </EmptyMedia>
+            <EmptyTitle>{strings.usage.noData}</EmptyTitle>
+          </EmptyHeader>
+        </Empty>
+      ) : (
+        <div className="flex flex-col">
+          <UsageRecordsTable records={records.data?.records ?? []} />
+          <Pager
+            page={records.data?.page ?? page}
+            totalPages={records.data?.totalPages ?? 1}
+            total={records.data?.total}
+            onChange={setPage}
+          />
+        </div>
+      )}
     </section>
   )
 }

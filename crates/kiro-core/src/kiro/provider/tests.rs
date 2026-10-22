@@ -17,7 +17,7 @@ mod tests {
 
     fn create_test_provider(config: Config, credentials: KiroCredentials) -> KiroProvider {
         let tm = MultiTokenManager::new(config, vec![credentials], None, None, false).unwrap();
-        KiroProvider::new(Arc::new(tm))
+        KiroProvider::new(Arc::new(tm)).unwrap()
     }
 
     #[test]

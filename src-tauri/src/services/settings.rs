@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Harllan He. Licensed under MIT.
+// Copyright (c) 2026 pigcursor. Licensed under MIT.
 
 //! 设置服务：SettingsView 汇总、热生效开关与需重建字段的持久化。
 use crate::error::IpcError;
@@ -7,11 +7,6 @@ use kiro_core::admin::types::SetLoadBalancingModeRequest;
 use kiro_core::model::config::{Config, TlsBackend};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-
-#[cfg(test)]
-use crate::state::AppState;
-#[cfg(test)]
-use kiro_core::paths::AppPaths;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -84,7 +79,7 @@ impl ApplyResult {
 
 pub fn settings_view(core: &Core) -> SettingsView {
     let config = core.config.read().clone();
-    let backend = core.backend.read();
+    let admin = core.admin();
     let version = env!("CARGO_PKG_VERSION").to_string();
     SettingsView {
         host: config.host.clone(),
@@ -99,8 +94,8 @@ pub fn settings_view(core: &Core) -> SettingsView {
             TlsBackend::Rustls => "rustls".to_string(),
             TlsBackend::NativeTls => "native-tls".to_string(),
         },
-        load_balancing_mode: backend.admin.get_load_balancing_mode().mode,
-        max_rpm_per_credential: backend.admin.max_rpm_per_credential(),
+        load_balancing_mode: admin.get_load_balancing_mode().mode,
+        max_rpm_per_credential: admin.max_rpm_per_credential(),
         write_chunking_max_lines: config.write_chunking_max_lines,
         forward_suggestion_mode: config.forward_suggestion_mode,
         client_token_passthrough: config.client_token_passthrough,
@@ -209,104 +204,175 @@ pub fn set_debug_logs(core: &Core, enabled: bool) -> Result<ApplyResult, IpcErro
     Ok(ApplyResult::applied(core, "debugLogs"))
 }
 
+/// 负载均衡模式：运行时由 token 管理器热切换（嵌入模式下它不写 config.json），
+/// 持久化统一走 ConfigStore，避免两个写入方互相覆盖 config.json
 pub fn set_load_balancing_mode(core: &Core, mode: String) -> Result<ApplyResult, IpcError> {
+    if mode != "priority" && mode != "balanced" {
+        return Err(IpcError::new(
+            "invalid_request",
+            "mode 必须是 priority 或 balanced",
+        ));
+    }
     let _guard = core.persist_lock.lock();
-    core.backend
-        .read()
-        .admin
-        .set_load_balancing_mode(SetLoadBalancingModeRequest { mode: mode.clone() })
-        .map_err(IpcError::internal)?;
     core.config_store
         .update_field("loadBalancingMode", json!(&mode))?;
+    core.admin()
+        .set_load_balancing_mode(SetLoadBalancingModeRequest { mode: mode.clone() })
+        .map_err(IpcError::internal)?;
     core.config.write().load_balancing_mode = mode;
     Ok(ApplyResult::applied(core, "loadBalancingMode"))
 }
 
 pub fn set_max_rpm_per_credential(core: &Core, value: u32) -> Result<ApplyResult, IpcError> {
     let _guard = core.persist_lock.lock();
-    core.backend.read().admin.set_max_rpm_per_credential(value);
     core.config_store
         .update_field("maxRpmPerCredential", json!(value))?;
+    core.admin().set_max_rpm_per_credential(value);
     core.config.write().max_rpm_per_credential = value;
     Ok(ApplyResult::applied(core, "maxRpmPerCredential"))
 }
 
-/// 应用需要重建代理运行时才能在下次启动生效的字段。
+/// 监听地址必须是 IP 字面量或 `localhost`
+pub(crate) fn validate_host(host: &str) -> Result<(), IpcError> {
+    if host == "localhost" || host.parse::<std::net::IpAddr>().is_ok() {
+        return Ok(());
+    }
+    Err(IpcError::new(
+        "invalid_host",
+        format!("监听地址无效：{host}（应为 IP 地址，如 127.0.0.1 / 0.0.0.0 / ::1，或 localhost）"),
+    ))
+}
+
+/// 用 kiro-core 的 Client 构建流程校验代理（含认证信息），与运行时实际生效的逻辑一致
+pub(crate) fn validate_proxy(
+    url: &str,
+    username: Option<&str>,
+    password: Option<&str>,
+    tls_backend: TlsBackend,
+) -> Result<(), IpcError> {
+    let mut proxy = kiro_core::http_client::ProxyConfig::new(url);
+    if let (Some(u), Some(p)) = (username, password) {
+        proxy = proxy.with_auth(u, p);
+    }
+    kiro_core::http_client::build_client(Some(&proxy), 10, tls_backend)
+        .map(|_| ())
+        .map_err(|e| IpcError::new("invalid_proxy", format!("代理地址无效：{e}")))
+}
+
+/// 运行时配置补丁的校验结果
+pub(crate) struct RuntimeConfigPlan {
+    /// 合并补丁后的新配置
+    pub next: Config,
+    /// 需写入 config.json 的字段（一次性写入）
+    pub fields: Vec<(&'static str, serde_json::Value)>,
+    /// 需重启代理才生效的字段
+    pub restart_required: Vec<String>,
+}
+
+/// 把补丁合并到配置副本上。
 ///
-/// 所有字段都会持久化并同步到内存配置，但只有调用方在 `restart_required`
-/// 非空时重启代理，监听地址、代理、TLS 与区域才会真正生效。
+/// 纯函数：先校验全部字段，任一字段无效即返回错误，调用方据此保证「全部写入或全部不写」。
+pub(crate) fn plan_runtime_config(
+    current: &Config,
+    patch: RuntimeConfigPatch,
+) -> Result<RuntimeConfigPlan, IpcError> {
+    let mut next = current.clone();
+    let mut fields: Vec<(&'static str, serde_json::Value)> = Vec::new();
+    let proxy_touched = patch.proxy_url.is_some()
+        || patch.proxy_username.is_some()
+        || patch.proxy_password.is_some()
+        || patch.tls_backend.is_some();
+
+    if let Some(host) = patch.host {
+        let host = host.trim().to_string();
+        validate_host(&host)?;
+        fields.push(("host", json!(&host)));
+        next.host = host;
+    }
+    if let Some(port) = patch.port {
+        if port == 0 {
+            return Err(IpcError::new("invalid_port", "监听端口必须在 1-65535 之间"));
+        }
+        fields.push(("port", json!(port)));
+        next.port = port;
+    }
+    if let Some(proxy_url) = patch.proxy_url {
+        let value = normalize_optional(proxy_url);
+        fields.push(("proxyUrl", json!(&value)));
+        next.proxy_url = value;
+    }
+    if let Some(proxy_username) = patch.proxy_username {
+        let value = normalize_optional(proxy_username);
+        fields.push(("proxyUsername", json!(&value)));
+        next.proxy_username = value;
+    }
+    if let Some(proxy_password) = patch.proxy_password {
+        let value = normalize_optional(proxy_password);
+        fields.push(("proxyPassword", json!(&value)));
+        next.proxy_password = value;
+    }
+    if let Some(tls_backend) = patch.tls_backend {
+        next.tls_backend = match tls_backend.as_str() {
+            "rustls" => TlsBackend::Rustls,
+            "native-tls" => TlsBackend::NativeTls,
+            _ => {
+                return Err(IpcError::new(
+                    "invalid_request",
+                    "tlsBackend 必须是 rustls 或 native-tls",
+                ));
+            }
+        };
+        fields.push(("tlsBackend", json!(&tls_backend)));
+    }
+    if let Some(region) = patch.region {
+        let region = region.trim().to_string();
+        if region.is_empty() {
+            return Err(IpcError::new("invalid_request", "region 不能为空"));
+        }
+        fields.push(("region", json!(&region)));
+        next.region = region;
+    }
+    if let Some(auth_region) = patch.auth_region {
+        let value = normalize_optional(auth_region);
+        fields.push(("authRegion", json!(&value)));
+        next.auth_region = value;
+    }
+    if let Some(api_region) = patch.api_region {
+        let value = normalize_optional(api_region);
+        fields.push(("apiRegion", json!(&value)));
+        next.api_region = value;
+    }
+
+    // 代理按「合并后的最终值」校验：只改用户名/密码/TLS 时也要确认组合后的代理可用
+    if proxy_touched && let Some(url) = &next.proxy_url {
+        validate_proxy(
+            url,
+            next.proxy_username.as_deref(),
+            next.proxy_password.as_deref(),
+            next.tls_backend,
+        )?;
+    }
+
+    let restart_required = fields.iter().map(|(key, _)| key.to_string()).collect();
+    Ok(RuntimeConfigPlan {
+        next,
+        fields,
+        restart_required,
+    })
+}
+
+/// 应用需要重建代理运行时才能生效的字段。
+///
+/// 先校验全部字段（任一无效即返回 invalid_host / invalid_port / invalid_proxy，不写任何内容），
+/// 再一次性写入 config.json 并同步内存配置。调用方在 `restart_required` 非空时重启代理，
+/// 监听地址、代理、TLS 与区域才会真正生效。
 pub fn set_runtime_config(core: &Core, patch: RuntimeConfigPatch) -> Result<ApplyResult, IpcError> {
     let _guard = core.persist_lock.lock();
-    let mut restart_required: Vec<String> = Vec::new();
-    {
-        let mut config = core.config.write();
-
-        if let Some(host) = patch.host {
-            core.config_store.update_field("host", json!(&host))?;
-            config.host = host;
-            restart_required.push("host".to_string());
-        }
-        if let Some(port) = patch.port {
-            core.config_store.update_field("port", json!(port))?;
-            config.port = port;
-            restart_required.push("port".to_string());
-        }
-        if let Some(proxy_url) = patch.proxy_url {
-            let value = normalize_optional(proxy_url);
-            core.config_store.update_field("proxyUrl", json!(&value))?;
-            config.proxy_url = value;
-            restart_required.push("proxyUrl".to_string());
-        }
-        if let Some(proxy_username) = patch.proxy_username {
-            let value = normalize_optional(proxy_username);
-            core.config_store
-                .update_field("proxyUsername", json!(&value))?;
-            config.proxy_username = value;
-            restart_required.push("proxyUsername".to_string());
-        }
-        if let Some(proxy_password) = patch.proxy_password {
-            let value = normalize_optional(proxy_password);
-            core.config_store
-                .update_field("proxyPassword", json!(&value))?;
-            config.proxy_password = value;
-            restart_required.push("proxyPassword".to_string());
-        }
-        if let Some(tls_backend) = patch.tls_backend {
-            let value = match tls_backend.as_str() {
-                "rustls" => TlsBackend::Rustls,
-                "native-tls" => TlsBackend::NativeTls,
-                _ => {
-                    return Err(IpcError::new(
-                        "invalid_request",
-                        "tlsBackend 必须是 rustls 或 native-tls",
-                    ));
-                }
-            };
-            core.config_store
-                .update_field("tlsBackend", json!(&tls_backend))?;
-            config.tls_backend = value;
-            restart_required.push("tlsBackend".to_string());
-        }
-        if let Some(region) = patch.region {
-            core.config_store.update_field("region", json!(&region))?;
-            config.region = region;
-            restart_required.push("region".to_string());
-        }
-        if let Some(auth_region) = patch.auth_region {
-            let value = normalize_optional(auth_region);
-            core.config_store
-                .update_field("authRegion", json!(&value))?;
-            config.auth_region = value;
-            restart_required.push("authRegion".to_string());
-        }
-        if let Some(api_region) = patch.api_region {
-            let value = normalize_optional(api_region);
-            core.config_store.update_field("apiRegion", json!(&value))?;
-            config.api_region = value;
-            restart_required.push("apiRegion".to_string());
-        }
-    }
-    Ok(ApplyResult::needs_restart(core, restart_required))
+    let current = core.config.read().clone();
+    let plan = plan_runtime_config(&current, patch)?;
+    core.config_store.update_fields(&plan.fields)?;
+    *core.config.write() = plan.next;
+    Ok(ApplyResult::needs_restart(core, plan.restart_required))
 }
 
 /// 启动时把配置文件中的进程级开关应用到运行时。
@@ -331,18 +397,20 @@ fn normalize_optional(value: String) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::test_support::test_state;
+
+    fn raw_config(core: &Core) -> String {
+        std::fs::read_to_string(core.paths.config()).unwrap()
+    }
 
     // MultiTokenManager::new 会调用 block_in_place 写入账号 ID 计数器，
     // 该 API 要求 multi-thread runtime。
     #[tokio::test(flavor = "multi_thread")]
     async fn toggling_suggestion_mode_persists_and_updates_switch() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = AppPaths::new(dir.path().to_path_buf()).unwrap();
-        let state = AppState::try_new(paths.clone()).unwrap();
+        let (_dir, state) = test_state();
         let core = state.core().unwrap();
         set_suggestion_mode(&core, true).unwrap();
-        let raw: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(paths.config()).unwrap()).unwrap();
+        let raw: serde_json::Value = serde_json::from_str(&raw_config(&core)).unwrap();
         assert_eq!(raw["forwardSuggestionMode"], true);
         assert!(
             core.backend
@@ -354,19 +422,135 @@ mod tests {
 
     #[test]
     fn runtime_config_marks_restart_required() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = AppPaths::new(dir.path().to_path_buf()).unwrap();
-        let state = AppState::try_new(paths).unwrap();
+        let (_dir, state) = test_state();
         let core = state.core().unwrap();
         let result = set_runtime_config(
             &core,
             RuntimeConfigPatch {
                 port: Some(6000),
+                host: Some("0.0.0.0".into()),
+                proxy_url: Some("socks5://127.0.0.1:1080".into()),
                 ..Default::default()
             },
         )
         .unwrap();
         assert!(result.restart_required.contains(&"port".to_string()));
+        assert!(result.restart_required.contains(&"host".to_string()));
+        assert!(result.restart_required.contains(&"proxyUrl".to_string()));
         assert_eq!(core.config.read().port, 6000);
+        let raw: serde_json::Value = serde_json::from_str(&raw_config(&core)).unwrap();
+        assert_eq!(raw["port"], 6000);
+        assert_eq!(raw["host"], "0.0.0.0");
+        assert_eq!(raw["proxyUrl"], "socks5://127.0.0.1:1080");
+    }
+
+    /// 任一字段无效：返回对应错误码，config.json 与内存配置都保持不变
+    fn assert_rejected(patch: RuntimeConfigPatch, code: &str) {
+        let (_dir, state) = test_state();
+        let core = state.core().unwrap();
+        let before_file = raw_config(&core);
+        let before_port = core.config.read().port;
+        let err = set_runtime_config(&core, patch).unwrap_err();
+        assert_eq!(err.code, code, "{}", err.message);
+        assert_eq!(raw_config(&core), before_file, "失败时不得写入任何字段");
+        assert_eq!(core.config.read().port, before_port);
+        assert!(core.config.read().proxy_url.is_none());
+    }
+
+    #[test]
+    fn runtime_config_rejects_invalid_host_without_persisting() {
+        assert_rejected(
+            RuntimeConfigPatch {
+                // 有效字段在前：确认不是「逐字段写入」
+                port: Some(6100),
+                host: Some("my-host.local".into()),
+                ..Default::default()
+            },
+            "invalid_host",
+        );
+    }
+
+    #[test]
+    fn runtime_config_rejects_zero_port_without_persisting() {
+        assert_rejected(
+            RuntimeConfigPatch {
+                host: Some("127.0.0.1".into()),
+                port: Some(0),
+                ..Default::default()
+            },
+            "invalid_port",
+        );
+    }
+
+    #[test]
+    fn runtime_config_rejects_invalid_proxy_without_persisting() {
+        assert_rejected(
+            RuntimeConfigPatch {
+                port: Some(6200),
+                proxy_url: Some("ftp://127.0.0.1:21".into()),
+                ..Default::default()
+            },
+            "invalid_proxy",
+        );
+    }
+
+    #[test]
+    fn validate_host_accepts_ip_and_localhost_only() {
+        for host in ["127.0.0.1", "0.0.0.0", "::1", "::", "localhost"] {
+            assert!(validate_host(host).is_ok(), "{host}");
+        }
+        for host in ["", "LOCALHOST", "example.com", "127.0.0.1:80", "[::1]"] {
+            assert_eq!(
+                validate_host(host).unwrap_err().code,
+                "invalid_host",
+                "{host}"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_proxy_url_clears_proxy() {
+        let (_dir, state) = test_state();
+        let core = state.core().unwrap();
+        set_runtime_config(
+            &core,
+            RuntimeConfigPatch {
+                proxy_url: Some("http://127.0.0.1:7890".into()),
+                proxy_username: Some("user".into()),
+                proxy_password: Some(" secret ".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(core.config.read().proxy_password.as_deref(), Some("secret"));
+        set_runtime_config(
+            &core,
+            RuntimeConfigPatch {
+                proxy_url: Some("  ".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(core.config.read().proxy_url.is_none());
+        let raw: serde_json::Value = serde_json::from_str(&raw_config(&core)).unwrap();
+        assert!(raw["proxyUrl"].is_null());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_balancing_mode_persists_through_config_store() {
+        let (_dir, state) = test_state();
+        let core = state.core().unwrap();
+        set_load_balancing_mode(&core, "balanced".into()).unwrap();
+        let raw: serde_json::Value = serde_json::from_str(&raw_config(&core)).unwrap();
+        assert_eq!(raw["loadBalancingMode"], "balanced");
+        // 其它字段（测试端口）原样保留
+        assert_eq!(raw["port"], 0);
+        assert_eq!(core.admin().get_load_balancing_mode().mode, "balanced");
+        assert_eq!(
+            set_load_balancing_mode(&core, "random".into())
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
     }
 }

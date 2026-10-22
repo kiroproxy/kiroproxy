@@ -14,11 +14,17 @@ static HANDLE: OnceLock<FilterHandle> = OnceLock::new();
 /// 当前 DEBUG 开关状态（GET 接口与状态查询用，避免从过滤器反解）
 static DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// 构建过滤器：优先 RUST_LOG，缺省 info；debug=true 时追加全局 debug 指令
+/// DEBUG 开关作用的 target：仅本应用自己的 crate。
 ///
-/// 追加的 `debug` 是全局默认档，EnvFilter 中更具体的 target 定向指令
-/// （如 `kiro2cc_proxy::kiro=debug`）仍优先于它。同 target 指令是替换语义，
-/// 故 RUST_LOG 已含裸 trace 指令时跳过追加，保证开关只升不降。
+/// 不能追加全局 `debug`：h2 / hyper / reqwest / rustls 在 DEBUG 下逐帧打日志，
+/// 少量请求即可刷出上万行，淹没日志页并拖慢 UI。
+pub const APP_LOG_TARGETS: [&str; 2] = ["kiro_core", "kiroproxy_app"];
+
+/// 构建过滤器：优先 RUST_LOG，缺省 info；debug=true 时为本应用 crate 追加 debug 指令
+///
+/// 追加的是 `kiro_core=debug,kiroproxy_app=debug` 定向指令，第三方依赖保持原档位。
+/// RUST_LOG 仍优先：已为同一 target 显式配置的指令不被覆盖（同 target 指令是替换语义），
+/// RUST_LOG 的有效全局档已是 trace 时也跳过追加，保证开关只升不降。
 pub fn build_filter(debug: bool) -> EnvFilter {
     let rust_log = std::env::var("RUST_LOG").ok();
     build_filter_from(rust_log.as_deref(), debug)
@@ -30,13 +36,30 @@ fn build_filter_from(rust_log: Option<&str>, debug: bool) -> EnvFilter {
     let mut filter = EnvFilter::builder()
         .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
         .parse_lossy(rust_log.unwrap_or(""));
-    if debug
-        && !has_bare_trace_directive(rust_log)
-        && let Ok(directive) = "debug".parse()
-    {
-        filter = filter.add_directive(directive);
+    if debug && !has_bare_trace_directive(rust_log) {
+        for target in APP_LOG_TARGETS {
+            if has_target_directive(rust_log, target) {
+                continue;
+            }
+            if let Ok(directive) = format!("{target}=debug").parse() {
+                filter = filter.add_directive(directive);
+            }
+        }
     }
     filter
+}
+
+/// RUST_LOG 是否已为 `target` 本身配置了指令（如 `kiro_core=trace`、`kiro_core[span]=info`，
+/// 以及不带级别、等价于 trace 的裸 `kiro_core`）
+///
+/// 只比对 target 完全相同的指令：`kiro_core::kiro=trace` 这类更具体的指令
+/// 与追加的 `kiro_core=debug` 共存，互不替换。
+fn has_target_directive(rust_log: Option<&str>, target: &str) -> bool {
+    rust_log.is_some_and(|v| {
+        v.split(',')
+            .map(|part| part.split(['=', '[']).next().unwrap_or_default().trim())
+            .any(|name| name == target)
+    })
 }
 
 /// RUST_LOG 的有效全局档是否已是 trace（无 target 的裸级别指令里，最后一条生效）
@@ -105,12 +128,34 @@ mod tests {
     fn test_build_filter_appends_debug() {
         let filter = build_filter_from(None, true);
         let text = filter.to_string();
-        assert!(text.contains("debug"), "filter = {}", text);
+        assert!(text.contains("kiro_core=debug"), "filter = {}", text);
+        assert!(text.contains("kiroproxy_app=debug"), "filter = {}", text);
+        // 全局档仍是 info：不得出现裸 debug 指令
+        assert!(
+            !text.split(',').any(|d| d.trim() == "debug"),
+            "filter = {}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_debug_toggle_only_targets_app_crates() {
+        use tracing::Level;
+        use tracing_subscriber::layer::SubscriberExt;
+        let subscriber = tracing_subscriber::registry().with(build_filter_from(None, true));
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(tracing::enabled!(target: "kiro_core::kiro::provider", Level::DEBUG));
+            assert!(tracing::enabled!(target: "kiroproxy_app::commands", Level::DEBUG));
+            // 第三方依赖保持 info：h2/hyper 的帧日志不再刷屏
+            assert!(!tracing::enabled!(target: "h2::codec::framed_read", Level::DEBUG));
+            assert!(!tracing::enabled!(target: "hyper_util::client", Level::DEBUG));
+            assert!(tracing::enabled!(target: "h2::codec::framed_read", Level::INFO));
+        });
     }
 
     #[test]
     fn test_build_filter_keeps_bare_trace_when_debug() {
-        // RUST_LOG=trace 时开启开关不得把全局档降为 debug（同 target 替换语义）
+        // RUST_LOG=trace 时开启开关不得把本应用 crate 降为 debug（同 target 替换语义）
         let text = build_filter_from(Some("trace"), true).to_string();
         assert!(text.contains("trace"), "filter = {}", text);
         assert!(!text.contains("debug"), "filter = {}", text);
@@ -118,13 +163,43 @@ mod tests {
 
     #[test]
     fn test_build_filter_appends_debug_with_target_directives() {
-        // target 定向指令与追加的全局 debug 共存，互不替换
-        let text = build_filter_from(Some("kiro2cc_proxy::kiro=trace"), true).to_string();
+        // 更具体的 target 定向指令与追加的 crate 级 debug 共存，互不替换
+        let text = build_filter_from(Some("kiro_core::kiro=trace"), true).to_string();
         assert!(
-            text.contains("debug") && text.contains("trace"),
+            text.contains("kiro_core=debug") && text.contains("kiro_core::kiro=trace"),
             "filter = {}",
             text
         );
+    }
+
+    #[test]
+    fn test_rust_log_target_directive_wins_over_toggle() {
+        // RUST_LOG 已显式配置 kiro_core 时开关不覆盖它（既不升也不降）
+        let text = build_filter_from(Some("kiro_core=warn"), true).to_string();
+        assert!(text.contains("kiro_core=warn"), "filter = {}", text);
+        assert!(!text.contains("kiro_core=debug"), "filter = {}", text);
+        assert!(text.contains("kiroproxy_app=debug"), "filter = {}", text);
+    }
+
+    #[test]
+    fn test_has_target_directive() {
+        assert!(has_target_directive(Some("kiro_core=trace"), "kiro_core"));
+        assert!(has_target_directive(
+            Some("info, kiro_core = warn"),
+            "kiro_core"
+        ));
+        assert!(has_target_directive(
+            Some("kiro_core[req]=debug"),
+            "kiro_core"
+        ));
+        assert!(!has_target_directive(
+            Some("kiro_core::kiro=trace"),
+            "kiro_core"
+        ));
+        // 裸 target 等价于 kiro_core=trace，同样视为已配置（避免被追加的 debug 降档）
+        assert!(has_target_directive(Some("kiro_core"), "kiro_core"));
+        assert!(!has_target_directive(Some("trace"), "kiro_core"));
+        assert!(!has_target_directive(None, "kiro_core"));
     }
 
     #[test]

@@ -149,8 +149,7 @@ impl ModelReleaseTracker {
                 return;
             }
         };
-        let tmp = path.with_extension("json.tmp");
-        if let Err(e) = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, path)) {
+        if let Err(e) = crate::common::fs::atomic_write(path, json.as_bytes()) {
             tracing::warn!("保存模型首次出现记录失败: {}", e);
         }
     }

@@ -1,5 +1,6 @@
 import * as React from "react"
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog"
+import { strings } from "@/lib/strings"
 import { cn } from "@/lib/utils"
 
 import { Button } from "@/components/ui/button"
@@ -68,9 +69,8 @@ function DialogContent({
               />
             }
           >
-            <XIcon
-            />
-            <span className="sr-only">Close</span>
+            <XIcon />
+            <span className="sr-only">{strings.a11y.close}</span>
           </DialogPrimitive.Close>
         )}
       </DialogPrimitive.Popup>

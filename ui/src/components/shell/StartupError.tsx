@@ -3,13 +3,13 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ipc } from "@/lib/ipc"
 import { strings } from "@/lib/strings"
-import type { IpcError } from "@/lib/types"
+import type { IpcErrorShape } from "@/lib/types"
 
 export function StartupError({
   error,
   onRetry,
 }: {
-  error: IpcError
+  error: IpcErrorShape
   onRetry: () => void
 }) {
   return (
@@ -19,7 +19,7 @@ export function StartupError({
           <div className="mb-2 grid size-12 place-items-center rounded-full bg-danger-soft text-text-danger">
             <AlertTriangleIcon className="size-6" />
           </div>
-          <CardTitle className="font-serif text-[20px]">{strings.errors.startupTitle}</CardTitle>
+          <CardTitle className="text-[20px]">{strings.errors.startupTitle}</CardTitle>
           <p className="text-[12px] text-muted-foreground">{strings.errors.startupHint}</p>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">

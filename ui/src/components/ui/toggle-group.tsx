@@ -31,22 +31,27 @@ function ToggleGroup({
     spacing?: number
     orientation?: "horizontal" | "vertical"
   }) {
+  // 分段控件的子项必须是独立的圆角胶囊：spacing=0 会把子项改成直角拼接并缩小内边距，所以分段变体忽略 spacing。
+  const segmented = variant === "segmented" || variant === "filter"
+  const resolvedSpacing = segmented ? 2 : spacing
+
   return (
     <ToggleGroupPrimitive
       data-slot="toggle-group"
       data-variant={variant}
       data-size={size}
-      data-spacing={spacing}
+      data-spacing={resolvedSpacing}
       data-orientation={orientation}
-      style={{ "--gap": spacing } as React.CSSProperties}
+      style={{ "--gap": resolvedSpacing } as React.CSSProperties}
       className={cn(
         "group/toggle-group flex w-fit flex-row items-center gap-[--spacing(var(--gap))] rounded-lg data-[size=sm]:rounded-[min(var(--radius-md),10px)] data-vertical:flex-col data-vertical:items-stretch",
+        segmented && "h-8 gap-0 rounded-[12px] border border-border bg-subtle p-0.5",
         className
       )}
       {...props}
     >
       <ToggleGroupContext.Provider
-        value={{ variant, size, spacing, orientation }}
+        value={{ variant, size, spacing: resolvedSpacing, orientation }}
       >
         {children}
       </ToggleGroupContext.Provider>

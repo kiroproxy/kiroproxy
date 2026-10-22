@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
+import { GitBranchIcon, GlobeIcon, Loader2Icon, LogInIcon } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -11,8 +12,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { FormField } from "@/components/ui/form-field"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
@@ -23,16 +24,149 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
-import { ipc } from "@/lib/ipc"
-import { queryKeys, useCreateAccount, useImportKam } from "@/lib/queries"
+import { errorMessage, ipc } from "@/lib/ipc"
+import { queryKeys, useCreateAccount, useImportKam, useImportKiroIde } from "@/lib/queries"
 import { strings } from "@/lib/strings"
-import type { AddCredentialRequest, KamPreview, KiroIdePreview } from "@/lib/types"
+import { fmtDateTime } from "@/lib/format"
+import type { AddCredentialRequest, KamPreview, KiroIdePreview, OauthStatus } from "@/lib/types"
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
+export type AddAccountTab = "oauth" | "kam" | "manual" | "kiroide"
+
+/** 浏览器登录页签：Kiro 官方 CLI 同款的 device code flow（打开浏览器授权 → 自动建号） */
+function BrowserLoginForm({ onDone }: { onDone: () => void }) {
+  const queryClient = useQueryClient()
+  const [status, setStatus] = useState<OauthStatus | null>(null)
+  const [busy, setBusy] = useState(false)
+  const doneRef = useRef(onDone)
+  doneRef.current = onDone
+  const handledSuccess = useRef(false)
+
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    void ipc
+      .getOauthStatus()
+      .then((initial) => {
+        if (!disposed && initial) setStatus(initial)
+      })
+      .catch(() => {
+        // 没有进行中的登录时保持空状态
+      })
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen<OauthStatus>("oauth://status", (event) => setStatus(event.payload)),
+      )
+      .then((fn) => {
+        if (disposed) fn()
+        else unlisten = fn
+      })
+      .catch(() => undefined)
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (status?.phase !== "success" || handledSuccess.current) return
+    handledSuccess.current = true
+    void queryClient.invalidateQueries({ queryKey: queryKeys.accounts })
+    toast.success(status.message ?? strings.accounts.oauth.success)
+    doneRef.current()
+  }, [queryClient, status?.phase, status?.message])
+
+  const start = async (provider: "google" | "github") => {
+    setBusy(true)
+    try {
+      setStatus(await ipc.startBrowserLogin(provider))
+    } catch (error) {
+      toast.error(errorMessage(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const cancel = async () => {
+    try {
+      setStatus(await ipc.cancelBrowserLogin())
+    } catch (error) {
+      toast.error(errorMessage(error))
+    }
+  }
+
+  const reopen = async () => {
+    try {
+      await ipc.reopenLoginPage()
+    } catch (error) {
+      toast.error(errorMessage(error))
+    }
+  }
+
+  const pending = status?.phase === "waiting" || status?.phase === "verifying"
+  const failed = status?.phase === "failed"
+
   return (
-    <div className="flex flex-col gap-1.5">
-      <Label className="text-[12px] text-muted-foreground">{label}</Label>
-      {children}
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-1.5">
+        <p className="text-[12px] leading-5 text-muted-foreground">
+          {strings.accounts.oauth.hint}
+        </p>
+      </div>
+
+      {pending ? (
+        <div className="flex flex-col gap-3 rounded-[12px] border border-border bg-subtle/40 p-4">
+          <div className="flex items-center gap-2 text-[12.5px] font-medium">
+            <Loader2Icon className="size-4 animate-spin" aria-hidden="true" />
+            {status?.phase === "verifying" ? strings.accounts.oauth.verifying : strings.accounts.oauth.waiting}
+          </div>
+          {status?.userCode ? (
+            <code className="w-fit rounded-[8px] bg-card px-2 py-1 font-mono text-[12px]">
+              {strings.accounts.oauth.userCode(status.userCode)}
+            </code>
+          ) : null}
+          {status?.verificationUrl ? (
+            <p className="truncate font-mono text-[11px] text-muted-foreground" title={status.verificationUrl}>
+              {status.verificationUrl}
+            </p>
+          ) : null}
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" size="sm" onClick={() => void reopen()}>
+              {strings.accounts.oauth.reopen}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => void cancel()}>
+              {strings.accounts.oauth.cancel}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {failed ? (
+            <p className="rounded-[10px] bg-danger-soft p-3 text-[12px] leading-5 text-text-danger">
+              {status?.message ?? strings.accounts.oauth.retry}
+            </p>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="secondary"
+              onClick={() => void start("google")}
+              disabled={busy}
+            >
+              <GlobeIcon />
+              {strings.accounts.oauth.google}
+            </Button>
+            <Button variant="secondary" onClick={() => void start("github")} disabled={busy}>
+              <GitBranchIcon />
+              {strings.accounts.oauth.github}
+            </Button>
+            {failed ? (
+              <span className="flex items-center gap-1 text-[12px] text-muted-foreground">
+                <LogInIcon className="size-3.5" aria-hidden="true" />
+                {strings.accounts.oauth.retry}
+              </span>
+            ) : null}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -52,7 +186,7 @@ function ManualForm({ onDone }: { onDone: () => void }) {
 
   const submit = () => {
     if (!refreshToken.trim()) {
-      toast.error("Refresh Token 不能为空")
+      toast.error(strings.accounts.refreshTokenRequired)
       return
     }
     const req: AddCredentialRequest = {
@@ -65,32 +199,32 @@ function ManualForm({ onDone }: { onDone: () => void }) {
       authRegion: authRegion || undefined,
       apiRegion: apiRegion || undefined,
       proxyUrl: proxyUrl || undefined,
-      priority: Number(priority) || 0,
+      priority: Math.max(0, Number.parseInt(priority, 10) || 0),
     }
     create.mutate(req, {
       onSuccess: () => {
-        toast.success("账号已添加")
+        toast.success(strings.accounts.added)
         onDone()
       },
-      onError: (error) => toast.error(error.message),
     })
   }
 
   return (
     <div className="grid gap-3 md:grid-cols-2">
       <div className="md:col-span-2">
-        <Field label={strings.accounts.manual.refreshToken}>
+        <FormField label={strings.accounts.manual.refreshToken}>
           <Textarea
             value={refreshToken}
             rows={2}
-            placeholder="粘贴 refreshToken"
+            autoComplete="off"
+            placeholder={strings.accounts.refreshTokenPaste}
             onChange={(e) => setRefreshToken(e.target.value)}
           />
-        </Field>
+        </FormField>
       </div>
-      <Field label={strings.accounts.manual.authMethod}>
+      <FormField label={strings.accounts.manual.authMethod}>
         <Select value={authMethod} onValueChange={(value) => setAuthMethod(String(value))}>
-          <SelectTrigger>
+          <SelectTrigger className="w-full">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -99,35 +233,35 @@ function ManualForm({ onDone }: { onDone: () => void }) {
             <SelectItem value="external_idp">external_idp</SelectItem>
           </SelectContent>
         </Select>
-      </Field>
-      <Field label={strings.accounts.manual.provider}>
+      </FormField>
+      <FormField label={strings.accounts.manual.provider}>
         <Input value={provider} onChange={(e) => setProvider(e.target.value)} placeholder="Google / GitHub" />
-      </Field>
-      <Field label={strings.accounts.manual.clientId}>
+      </FormField>
+      <FormField label={strings.accounts.manual.clientId}>
         <Input value={clientId} onChange={(e) => setClientId(e.target.value)} />
-      </Field>
-      <Field label={strings.accounts.manual.clientSecret}>
+      </FormField>
+      <FormField label={strings.accounts.manual.clientSecret}>
         <Input
           type="password"
           value={clientSecret}
           onChange={(e) => setClientSecret(e.target.value)}
         />
-      </Field>
-      <Field label={strings.accounts.manual.authRegion}>
+      </FormField>
+      <FormField label={strings.accounts.manual.authRegion}>
         <Input value={authRegion} onChange={(e) => setAuthRegion(e.target.value)} placeholder="us-east-1" />
-      </Field>
-      <Field label={strings.accounts.manual.apiRegion}>
+      </FormField>
+      <FormField label={strings.accounts.manual.apiRegion}>
         <Input value={apiRegion} onChange={(e) => setApiRegion(e.target.value)} placeholder="us-east-1" />
-      </Field>
-      <Field label={strings.accounts.manual.profileArn}>
+      </FormField>
+      <FormField label={strings.accounts.manual.profileArn}>
         <Input value={profileArn} onChange={(e) => setProfileArn(e.target.value)} />
-      </Field>
-      <Field label={strings.accounts.manual.proxyUrl}>
+      </FormField>
+      <FormField label={strings.accounts.manual.proxyUrl}>
         <Input value={proxyUrl} onChange={(e) => setProxyUrl(e.target.value)} placeholder="http://127.0.0.1:7890" />
-      </Field>
-      <Field label={strings.accounts.manual.priority}>
+      </FormField>
+      <FormField label={strings.accounts.manual.priority}>
         <Input type="number" min={0} value={priority} onChange={(e) => setPriority(e.target.value)} />
-      </Field>
+      </FormField>
       <div className="flex justify-end md:col-span-2">
         <Button onClick={submit} disabled={create.isPending}>
           {strings.accounts.manual.submit}
@@ -157,7 +291,7 @@ function KamForm({ onDone }: { onDone: () => void }) {
     try {
       setPreview(await ipc.previewKamImport(json))
     } catch (error) {
-      toast.error((error as { message?: string }).message ?? strings.errors.actionFailed)
+      toast.error(errorMessage(error))
     } finally {
       setBusy(false)
     }
@@ -170,11 +304,10 @@ function KamForm({ onDone }: { onDone: () => void }) {
       {
         onSuccess: (result) => {
           toast.success(
-            `导入 ${result.imported} 条，重复 ${result.duplicate}，失败 ${result.failed}，无效 ${result.invalid}`,
+            strings.accounts.importSummary(result.imported, result.duplicate, result.failed, result.invalid),
           )
           onDone()
         },
-        onError: (error) => toast.error(error.message),
       },
     )
   }
@@ -193,6 +326,7 @@ function KamForm({ onDone }: { onDone: () => void }) {
         <Textarea
           value={json}
           rows={7}
+          aria-label={strings.accounts.kamTab}
           placeholder={strings.accounts.kam.hint}
           onChange={(event) => {
             setJson(event.target.value)
@@ -212,7 +346,7 @@ function KamForm({ onDone }: { onDone: () => void }) {
             }}
           />
           <Button variant="secondary" size="sm" onClick={() => fileRef.current?.click()}>
-            选择文件
+            {strings.accounts.chooseFile}
           </Button>
           <Button variant="secondary" size="sm" onClick={handlePreview} disabled={busy || !json.trim()}>
             {strings.accounts.kam.preview}
@@ -229,8 +363,8 @@ function KamForm({ onDone }: { onDone: () => void }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Email</TableHead>
-                <TableHead>昵称</TableHead>
+                <TableHead>{strings.accounts.previewEmail}</TableHead>
+                <TableHead>{strings.accounts.previewNickname}</TableHead>
                 <TableHead>Provider</TableHead>
                 <TableHead>Auth</TableHead>
                 <TableHead>Token</TableHead>
@@ -281,45 +415,50 @@ function Info({ label, value }: { label: string; value: string }) {
 }
 
 function KiroIdeForm({ onDone }: { onDone: () => void }) {
-  const queryClient = useQueryClient()
+  const importIde = useImportKiroIde()
   const [preview, setPreview] = useState<KiroIdePreview | null | undefined>(undefined)
-  const [busy, setBusy] = useState(false)
+  const [scanning, setScanning] = useState(false)
 
   const scan = async () => {
-    setBusy(true)
+    setScanning(true)
     try {
       setPreview(await ipc.scanKiroIde())
     } catch (error) {
-      toast.error((error as { message?: string }).message ?? strings.errors.actionFailed)
+      toast.error(errorMessage(error))
       setPreview(null)
     } finally {
-      setBusy(false)
+      setScanning(false)
     }
   }
 
+  // 打开页签时自动扫描一次本机 Kiro IDE 登录缓存（外部系统同步，异步完成后才写状态）。
   useEffect(() => {
-    void scan()
+    let cancelled = false
+    ipc
+      .scanKiroIde()
+      .then((result) => {
+        if (!cancelled) setPreview(result)
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        toast.error(errorMessage(error))
+        setPreview(null)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
-  const importAccount = async () => {
-    setBusy(true)
-    try {
-      const result = await ipc.importKiroIde()
-      const extra = [
-        result.duplicate ? `重复 ${result.duplicate}` : "",
-        result.failed ? `验活失败 ${result.failed}` : "",
-      ]
-        .filter(Boolean)
-        .join("，")
-      toast.success(`导入 ${result.imported} 条${extra ? `，${extra}` : ""}`)
-      await queryClient.invalidateQueries({ queryKey: queryKeys.accounts })
-      onDone()
-    } catch (error) {
-      toast.error((error as { message?: string }).message ?? strings.errors.actionFailed)
-    } finally {
-      setBusy(false)
-    }
-  }
+  const busy = scanning || importIde.isPending
+  const importAccount = () =>
+    importIde.mutate(undefined, {
+      onSuccess: (result) => {
+        toast.success(
+          strings.accounts.importSummary(result.imported, result.duplicate, result.failed, result.invalid),
+        )
+        onDone()
+      },
+    })
 
   return (
     <div className="flex flex-col gap-3">
@@ -327,7 +466,7 @@ function KiroIdeForm({ onDone }: { onDone: () => void }) {
         {strings.accounts.kiroIdeHint}
       </p>
 
-      {busy && preview === undefined ? (
+      {preview === undefined ? (
         <div className="rounded-[12px] border border-border bg-subtle/40 p-6 text-center text-[12.5px] text-muted-foreground">
           {strings.common.loading}
         </div>
@@ -346,20 +485,20 @@ function KiroIdeForm({ onDone }: { onDone: () => void }) {
         <div className="flex flex-col gap-3 rounded-[12px] border border-border bg-subtle/40 p-4">
           <div className="flex items-center gap-2">
             <Badge variant="success">{strings.accounts.kiroIdeFound}</Badge>
-            <span className="truncate font-mono text-[10.5px] text-faint">{preview.path}</span>
+            <span className="truncate font-mono text-[11px] text-muted-foreground">{preview.path}</span>
           </div>
           <div className="grid gap-2 text-[12px] md:grid-cols-2">
             <Info label="Provider" value={preview.provider ?? "—"} />
             <Info label="Auth" value={preview.authMethod ?? "social"} />
             <Info label="Profile ARN" value={preview.profileArn ?? "—"} />
-            <Info label="过期时间" value={preview.expiresAt ?? "—"} />
+            <Info label={strings.accounts.expiresAt} value={fmtDateTime(preview.expiresAt)} />
             <Info label="Refresh Token" value={preview.maskedRefreshToken} />
           </div>
           <div className="flex justify-end gap-2">
             <Button variant="secondary" size="sm" onClick={() => void scan()} disabled={busy}>
               {strings.accounts.kiroIdeRescan}
             </Button>
-            <Button size="sm" onClick={() => void importAccount()} disabled={busy}>
+            <Button size="sm" onClick={importAccount} disabled={busy}>
               {strings.accounts.kiroIdeImport}
             </Button>
           </div>
@@ -371,9 +510,11 @@ function KiroIdeForm({ onDone }: { onDone: () => void }) {
 
 export function AddAccountDialog({
   open,
+  tab = "oauth",
   onOpenChange,
 }: {
   open: boolean
+  tab?: AddAccountTab
   onOpenChange: (open: boolean) => void
 }) {
   const done = () => onOpenChange(false)
@@ -384,19 +525,23 @@ export function AddAccountDialog({
           <DialogTitle>{strings.accounts.addTitle}</DialogTitle>
           <DialogDescription>{strings.accounts.emptyHint}</DialogDescription>
         </DialogHeader>
-        <Tabs defaultValue="kam" className="flex flex-col gap-3">
+        <Tabs key={tab} defaultValue={tab} className="gap-3">
           <TabsList>
+            <TabsTrigger value="oauth">{strings.accounts.oauthTab}</TabsTrigger>
             <TabsTrigger value="kam">{strings.accounts.kamTab}</TabsTrigger>
             <TabsTrigger value="manual">{strings.accounts.manualTab}</TabsTrigger>
             <TabsTrigger value="kiroide">{strings.accounts.kiroIdeTab}</TabsTrigger>
           </TabsList>
-          <TabsContent value="kam" className="w-full">
+          <TabsContent value="oauth">
+            <BrowserLoginForm onDone={done} />
+          </TabsContent>
+          <TabsContent value="kam">
             <KamForm onDone={done} />
           </TabsContent>
-          <TabsContent value="manual" className="w-full">
+          <TabsContent value="manual">
             <ManualForm onDone={done} />
           </TabsContent>
-          <TabsContent value="kiroide" className="w-full">
+          <TabsContent value="kiroide">
             <KiroIdeForm onDone={done} />
           </TabsContent>
         </Tabs>

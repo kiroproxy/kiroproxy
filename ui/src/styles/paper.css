@@ -1,5 +1,7 @@
 @import "tailwindcss";
-@import "@fontsource/source-serif-4/600.css";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource/source-serif-4/latin-600.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -53,6 +55,9 @@
   --orb-glow: rgba(180, 85, 47, 0.32);
   --chart-1: var(--quota);
   --chart-2: var(--series-2);
+  --chart-3: var(--info);
+  --chart-4: #9A6A8C;
+  --chart-other: var(--border-strong);
   --radius: 10px;
   --radius-xs: 5px;
   --radius-sm: 8px;
@@ -111,6 +116,8 @@
   --orb-start: #EBA27F;
   --orb-end: #B4552F;
   --orb-glow: rgba(217, 118, 75, 0.35);
+  --chart-4: #C597B8;
+  --chart-other: #6A5D50;
   --shadow-card: 0 0 0 0 transparent;
 }
 
@@ -163,6 +170,9 @@
   --color-nav-active: var(--nav-active);
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-other: var(--chart-other);
   --radius-xs: var(--radius-xs);
   --radius-sm: var(--radius-sm);
   --radius-md: var(--radius-md);
@@ -184,8 +194,24 @@
   }
   .num { font-variant-numeric: tabular-nums; }
   .serif { font-family: var(--font-serif); }
-  .alert-row:hover { background: var(--subtle); }
   ::-webkit-scrollbar { width: 4px; height: 4px; }
   ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 9999px; }
   ::-webkit-scrollbar-track { background: transparent; }
+}
+
+@keyframes orb-breathe {
+  0%, 100% { transform: scale(0.92); opacity: 0.22; }
+  50% { transform: scale(1.06); opacity: 0.4; }
+}
+
+/* 系统开启「减少动态效果」时，动画与过渡全部改为瞬时，骨架屏停止闪动。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

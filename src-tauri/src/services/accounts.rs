@@ -1,7 +1,7 @@
-// Copyright (c) 2026 Harllan He. Licensed under MIT.
+// Copyright (c) 2026 pigcursor. Licensed under MIT.
 
 use crate::error::IpcError;
-use crate::state::AppState;
+use crate::state::{AppState, Core};
 use kiro_core::admin::types::AddCredentialRequest;
 use kiro_core::kam::{self, refresh_token_hash};
 use serde::Serialize;
@@ -79,18 +79,37 @@ pub fn preview_kam(json: &str) -> anyhow::Result<KamPreview> {
     })
 }
 
+/// KAM 账号映射为添加请求。
+///
+/// `verify = true` 时先以禁用状态创建，余额校验通过后再启用（校验失败的账号保持禁用）；
+/// `verify = false` 时直接以启用状态创建——此前一律 `disabled: true` 且之后无人启用，
+/// 账号被计入「已导入」却永远不可用。
+pub(crate) fn kam_add_request(account: &kam::KamAccount, verify: bool) -> AddCredentialRequest {
+    AddCredentialRequest {
+        refresh_token: account.refresh_token.clone(),
+        auth_method: account
+            .auth_method
+            .clone()
+            .unwrap_or_else(|| "social".into()),
+        client_id: account.client_id.clone(),
+        client_secret: account.client_secret.clone(),
+        provider: account.provider.clone(),
+        profile_arn: account.profile_arn.clone(),
+        auth_region: account.auth_region.clone(),
+        disabled: verify,
+        ..Default::default()
+    }
+}
+
 pub async fn import_kam(
-    state: &AppState,
+    core: &Core,
     json: &str,
     verify: bool,
-    app: &AppHandle,
+    mut on_progress: impl FnMut(serde_json::Value),
 ) -> Result<ImportOutcome, IpcError> {
-    let core = state.core()?;
     let parsed = kam::parse(json)?;
-    let existing: HashSet<String> = core
-        .backend
-        .read()
-        .admin
+    let admin = core.admin();
+    let existing: HashSet<String> = admin
         .get_all_credentials()
         .credentials
         .iter()
@@ -108,23 +127,8 @@ pub async fn import_kam(
             outcome.duplicate += 1;
             continue;
         }
-        let req = AddCredentialRequest {
-            refresh_token: account.refresh_token.clone(),
-            auth_method: account
-                .auth_method
-                .clone()
-                .unwrap_or_else(|| "social".into()),
-            client_id: account.client_id.clone(),
-            client_secret: account.client_secret.clone(),
-            provider: account.provider.clone(),
-            profile_arn: account.profile_arn.clone(),
-            auth_region: account.auth_region.clone(),
-            disabled: true,
-            ..Default::default()
-        };
-        let admin = core.backend.read().admin.clone();
         let created = admin
-            .add_credential(req)
+            .add_credential(kam_add_request(account, verify))
             .await
             .map_err(IpcError::internal)?;
         let id = created.credential_id;
@@ -142,15 +146,12 @@ pub async fn import_kam(
         }
         outcome.imported += 1;
         let status = if ok { "success" } else { "failed" };
-        let _ = app.emit(
-            "accounts://import-progress",
-            serde_json::json!({
-                "current": index + 1,
-                "total": parsed.accounts.len(),
-                "id": id,
-                "status": status
-            }),
-        );
+        on_progress(serde_json::json!({
+            "current": index + 1,
+            "total": parsed.accounts.len(),
+            "id": id,
+            "status": status
+        }));
     }
     Ok(outcome)
 }
@@ -161,7 +162,7 @@ pub async fn verify_accounts(
     app: &AppHandle,
 ) -> Result<VerifyOutcome, IpcError> {
     let core = state.core()?;
-    let admin = core.backend.read().admin.clone();
+    let admin = core.admin();
     let mut outcome = VerifyOutcome::default();
     state
         .verify_cancel
@@ -208,4 +209,40 @@ pub async fn verify_accounts(
         }
     }
     Ok(outcome)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_account() -> kam::KamAccount {
+        kam::KamAccount {
+            refresh_token: "r".repeat(150),
+            email: Some("user@example.com".into()),
+            nickname: Some("工作号".into()),
+            auth_method: Some("social".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn kam_import_without_verify_creates_enabled_accounts() {
+        let req = kam_add_request(&sample_account(), false);
+        assert!(!req.disabled, "不验证时账号应直接可用");
+        assert_eq!(req.auth_method, "social");
+        assert_eq!(req.refresh_token, "r".repeat(150));
+    }
+
+    #[test]
+    fn kam_import_with_verify_creates_disabled_until_balance_check() {
+        let req = kam_add_request(&sample_account(), true);
+        assert!(req.disabled, "验证模式先禁用，余额校验通过后再启用");
+    }
+
+    #[test]
+    fn kam_request_defaults_auth_method_to_social() {
+        let mut account = sample_account();
+        account.auth_method = None;
+        assert_eq!(kam_add_request(&account, false).auth_method, "social");
+    }
 }

@@ -1,5 +1,6 @@
-// Copyright (c) 2026 Harllan He. Licensed under MIT.
+// Copyright (c) 2026 pigcursor. Licensed under MIT.
 
+use crate::commands::blocking;
 use crate::error::IpcError;
 use crate::services::accounts::ImportOutcome;
 use crate::state::AppState;
@@ -21,17 +22,21 @@ pub struct KiroIdePreview {
     pub path: String,
 }
 
+/// 扫描会读取 ~/.aws/sso/cache 下的文件，放到阻塞线程池
 #[tauri::command]
-pub fn scan_kiro_ide() -> Result<Option<KiroIdePreview>, IpcError> {
-    let account = kiro_ide::scan().map_err(IpcError::internal)?;
-    Ok(account.map(|account| KiroIdePreview {
-        masked_refresh_token: kiro_ide::mask_token(&account.refresh_token),
-        provider: account.provider,
-        auth_method: account.auth_method,
-        profile_arn: account.profile_arn,
-        expires_at: account.expires_at,
-        path: account.path.to_string_lossy().to_string(),
-    }))
+pub async fn scan_kiro_ide() -> Result<Option<KiroIdePreview>, IpcError> {
+    blocking(|| {
+        let account = kiro_ide::scan().map_err(IpcError::internal)?;
+        Ok(account.map(|account| KiroIdePreview {
+            masked_refresh_token: kiro_ide::mask_token(&account.refresh_token),
+            provider: account.provider,
+            auth_method: account.auth_method,
+            profile_arn: account.profile_arn,
+            expires_at: account.expires_at,
+            path: account.path.to_string_lossy().to_string(),
+        }))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -47,10 +52,8 @@ pub async fn import_kiro_ide(
         ));
     };
 
-    let existing: HashSet<String> = core
-        .backend
-        .read()
-        .admin
+    let admin = core.admin();
+    let existing: HashSet<String> = admin
         .get_all_credentials()
         .credentials
         .iter()
@@ -76,7 +79,6 @@ pub async fn import_kiro_ide(
         disabled: true,
         ..Default::default()
     };
-    let admin = core.backend.read().admin.clone();
     let created = admin
         .add_credential(req)
         .await

@@ -23,8 +23,65 @@ pub struct DailySummary {
     pub total_credits_saved: f64,
     /// 累计输入 tokens（含 cache 命中部分）
     pub total_input_tokens: u64,
+    /// 累计输出 tokens
+    pub total_output_tokens: u64,
     /// 累计 cache 命中的输入 tokens（None 按 0 计入）
     pub total_cache_read_tokens: u64,
+}
+
+/// 区间内按模型汇总的用量（按请求数降序）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelBreakdown {
+    pub model: String,
+    pub requests: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cost: f64,
+    pub credits: f64,
+}
+
+/// 区间内按 CST 日期 × 模型汇总的用量（按日期升序、模型名升序）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DayModelBreakdown {
+    pub date: String,
+    pub model: String,
+    pub requests: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost: f64,
+    pub credits: f64,
+}
+
+/// 用量分布：按模型 + 按日期×模型两个视图
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageBreakdown {
+    pub by_model: Vec<ModelBreakdown>,
+    pub by_day_model: Vec<DayModelBreakdown>,
+}
+
+/// 记录归属的 CST（UTC+8）日期，与日报统计同一口径
+fn cst_date(record: &UsageRecord) -> String {
+    let cst = FixedOffset::east_opt(8 * 3600).unwrap();
+    record
+        .created_at
+        .with_timezone(&cst)
+        .format("%Y-%m-%d")
+        .to_string()
+}
+
+/// 单条记录的 credits：真实值优先，旧记录按 estimated_cost × k_ref 回退（与日报一致）
+fn record_credits(record: &UsageRecord) -> f64 {
+    record
+        .credits_used
+        .unwrap_or(record.estimated_cost * get_k_ref(&record.model))
+}
+
+fn non_negative(value: i32) -> u64 {
+    value.max(0) as u64
 }
 
 /// 指定账号在指定 CST 日期的用量汇总
@@ -116,6 +173,7 @@ impl UsageTracker {
             credits: f64,
             saved: f64,
             inputs: u64,
+            outputs: u64,
             cache_reads: u64,
         }
         let mut map: BTreeMap<String, DayAgg> = BTreeMap::new();
@@ -135,6 +193,7 @@ impl UsageTracker {
                 entry.saved += r.estimated_cost * get_k_ref(&r.model) - cu;
             }
             entry.inputs = entry.inputs.saturating_add(r.input_tokens.max(0) as u64);
+            entry.outputs = entry.outputs.saturating_add(non_negative(r.output_tokens));
             entry.cache_reads = entry
                 .cache_reads
                 .saturating_add(r.cache_read_input_tokens.unwrap_or(0).max(0) as u64);
@@ -148,11 +207,99 @@ impl UsageTracker {
                 total_credits: agg.credits,
                 total_credits_saved: agg.saved,
                 total_input_tokens: agg.inputs,
+                total_output_tokens: agg.outputs,
                 total_cache_read_tokens: agg.cache_reads,
             })
             .collect();
         result.sort_by(|a, b| b.date.cmp(&a.date));
         result
+    }
+
+    /// 按 CST（UTC+8）闭区间 [from, to]（`YYYY-MM-DD`，含两端）聚合用量分布
+    ///
+    /// - `by_model`：按模型汇总，请求数降序（同请求数按模型名升序，保证结果稳定）
+    /// - `by_day_model`：按日期 × 模型汇总，日期升序、模型名升序
+    ///
+    /// credits 口径与日报一致：`credits_used.unwrap_or(estimated_cost * k_ref)`。
+    pub fn get_usage_breakdown(&self, from: &str, to: &str) -> UsageBreakdown {
+        use std::collections::{BTreeMap, HashMap};
+
+        #[derive(Default)]
+        struct Agg {
+            requests: u64,
+            inputs: u64,
+            outputs: u64,
+            cache_reads: u64,
+            cost: f64,
+            credits: f64,
+        }
+
+        impl Agg {
+            fn add(&mut self, r: &UsageRecord) {
+                self.requests += 1;
+                self.inputs = self.inputs.saturating_add(non_negative(r.input_tokens));
+                self.outputs = self.outputs.saturating_add(non_negative(r.output_tokens));
+                self.cache_reads = self
+                    .cache_reads
+                    .saturating_add(non_negative(r.cache_read_input_tokens.unwrap_or(0)));
+                self.cost += r.estimated_cost;
+                self.credits += record_credits(r);
+            }
+        }
+
+        let mut by_model: HashMap<String, Agg> = HashMap::new();
+        let mut by_day_model: BTreeMap<(String, String), Agg> = BTreeMap::new();
+        {
+            let records = self.records.read();
+            for r in records.iter() {
+                let date = cst_date(r);
+                if date.as_str() < from || date.as_str() > to {
+                    continue;
+                }
+                by_model.entry(r.model.clone()).or_default().add(r);
+                by_day_model
+                    .entry((date, r.model.clone()))
+                    .or_default()
+                    .add(r);
+            }
+        }
+
+        let mut models: Vec<ModelBreakdown> = by_model
+            .into_iter()
+            .map(|(model, agg)| ModelBreakdown {
+                model,
+                requests: agg.requests,
+                input_tokens: agg.inputs,
+                output_tokens: agg.outputs,
+                cache_read_tokens: agg.cache_reads,
+                cost: agg.cost,
+                credits: agg.credits,
+            })
+            .collect();
+        models.sort_by(|a, b| {
+            b.requests
+                .cmp(&a.requests)
+                .then_with(|| a.model.cmp(&b.model))
+        });
+
+        // BTreeMap 的 (date, model) 键序即「日期升序 → 模型名升序」
+        let days = by_day_model
+            .into_iter()
+            .map(|((date, model), agg)| DayModelBreakdown {
+                date,
+                model,
+                requests: agg.requests,
+                input_tokens: agg.inputs,
+                output_tokens: agg.outputs,
+                cost: agg.cost,
+                credits: agg.credits,
+            })
+            .collect();
+
+        UsageBreakdown {
+            by_model: models,
+            by_day_model: days,
+        }
     }
 
     /// 分页查询指定 CST（UTC+8）日期的原始记录，硬限总量 2000 条

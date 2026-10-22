@@ -1,24 +1,51 @@
 import { useState } from "react"
 import { Link } from "react-router-dom"
+import { CheckIcon, CopyIcon, TerminalIcon } from "lucide-react"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Card, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { errorMessage, ipc } from "@/lib/ipc"
+import { useApiKeys } from "@/lib/queries"
 import { strings } from "@/lib/strings"
 
 export interface ConnectCardProps {
   baseUrl: string
 }
 
-export function ConnectCard({ baseUrl }: ConnectCardProps) {
-  const [copied, setCopied] = useState(false)
+async function writeClipboard(text: string) {
+  await navigator.clipboard.writeText(text)
+}
 
-  const copy = async () => {
+export function ConnectCard({ baseUrl }: ConnectCardProps) {
+  const keys = useApiKeys()
+  const [copied, setCopied] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const key = keys.data?.find((item) => item.enabled) ?? keys.data?.[0]
+
+  const copyBaseUrl = async () => {
     try {
-      await navigator.clipboard.writeText(baseUrl)
+      await writeClipboard(baseUrl)
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1600)
-    } catch {
-      // 剪贴板不可用时保持原状，用户仍可手动选择文本。
+    } catch (error) {
+      toast.error(errorMessage(error))
+    }
+  }
+
+  const copyEnv = async () => {
+    if (!key) return
+    setBusy(true)
+    try {
+      const secret = await ipc.getApiKeySecret(key.id)
+      await writeClipboard(
+        `export ANTHROPIC_BASE_URL="${baseUrl}"\nexport ANTHROPIC_API_KEY="${secret}"`,
+      )
+      toast.success(strings.overview.envCopied)
+    } catch (error) {
+      toast.error(errorMessage(error))
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -34,8 +61,9 @@ export function ConnectCard({ baseUrl }: ConnectCardProps) {
       <div className="grid gap-1.5">
         <span className="text-[11.5px] text-muted-foreground">{strings.overview.baseUrl}</span>
         <div className="flex items-center gap-2">
-          <Input readOnly value={baseUrl} className="num" />
-          <Button variant="secondary" size="sm" onClick={copy}>
+          <Input readOnly value={baseUrl} className="num" aria-label={strings.overview.baseUrl} />
+          <Button variant="secondary" size="sm" onClick={() => void copyBaseUrl()}>
+            {copied ? <CheckIcon /> : <CopyIcon />}
             {copied ? strings.common.copied : strings.common.copy}
           </Button>
         </div>
@@ -43,11 +71,24 @@ export function ConnectCard({ baseUrl }: ConnectCardProps) {
 
       <div className="grid gap-1.5">
         <span className="text-[11.5px] text-muted-foreground">{strings.overview.defaultKey}</span>
-        <div className="flex items-center gap-2">
-          <span className="text-[12.5px] font-medium">{strings.connect.defaultKey}</span>
-          <span className="num text-[12px] text-faint">{strings.overview.keyMask}</span>
-        </div>
+        {key ? (
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="truncate text-[12.5px] font-medium">{key.name}</span>
+            <code className="num truncate font-mono text-[11.5px] text-muted-foreground">
+              {key.maskedKey}
+            </code>
+          </div>
+        ) : (
+          <span className="text-[12px] text-muted-foreground">
+            {keys.isLoading ? strings.overview.keyLoading : strings.overview.noKeys}
+          </span>
+        )}
       </div>
+
+      <Button variant="secondary" disabled={!key || busy} onClick={() => void copyEnv()}>
+        <TerminalIcon />
+        {strings.overview.copyEnv}
+      </Button>
     </Card>
   )
 }

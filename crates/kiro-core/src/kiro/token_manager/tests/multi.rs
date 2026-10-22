@@ -153,6 +153,62 @@ pub(crate) mod tests {
         std::fs::remove_file(&config_path).unwrap();
     }
 
+    #[test]
+    fn test_set_load_balancing_mode_runtime_only_when_config_writes_disabled() {
+        // 嵌入桌面端：config.json 由外层 ConfigStore 统一写入，manager 只改运行时状态
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        std::fs::write(
+            &config_path,
+            r#"{"loadBalancingMode":"priority","port":5690}"#,
+        )
+        .unwrap();
+
+        let config = Config::load(&config_path).unwrap();
+        let manager =
+            MultiTokenManager::new(config, vec![KiroCredentials::default()], None, None, false)
+                .unwrap();
+        manager.disable_config_writes();
+        manager
+            .set_load_balancing_mode("balanced".to_string())
+            .unwrap();
+
+        assert_eq!(manager.get_load_balancing_mode(), "balanced");
+        let raw = std::fs::read_to_string(&config_path).unwrap();
+        assert_eq!(raw, r#"{"loadBalancingMode":"priority","port":5690}"#);
+    }
+
+    #[test]
+    fn test_retired_manager_stops_persisting_credentials_and_stats() {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials_path = dir.path().join("credentials.json");
+        let mut cred = KiroCredentials::default();
+        cred.id = Some(1);
+        cred.refresh_token = Some("a".repeat(150));
+        let manager = MultiTokenManager::new(
+            Config::default(),
+            vec![cred],
+            None,
+            Some(credentials_path.clone()),
+            true,
+        )
+        .unwrap();
+        manager.set_priority(1, 3).unwrap();
+        let before = std::fs::read_to_string(&credentials_path).unwrap();
+        assert!(before.contains("\"priority\": 3"));
+
+        manager.retire();
+        assert!(manager.is_retired());
+        // 退役后内存仍可修改（在途请求照常完成），但不再写盘
+        manager.set_priority(1, 7).unwrap();
+        assert_eq!(std::fs::read_to_string(&credentials_path).unwrap(), before);
+        let stats_path = dir.path().join("kiro_stats.json");
+        let stats_before = std::fs::read_to_string(&stats_path).ok();
+        manager.report_success(1);
+        manager.flush();
+        assert_eq!(std::fs::read_to_string(&stats_path).ok(), stats_before);
+    }
+
     #[tokio::test]
     async fn test_multi_token_manager_acquire_context_auto_recovers_all_disabled() {
         let config = Config::default();
