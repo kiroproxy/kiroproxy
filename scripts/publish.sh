@@ -78,4 +78,4 @@ echo "    已推送（含标签） → $KOPS_REMOTE/$BRANCH"
 publish_public
 publish_docs
 
-echo "完成：$KOPS_REMOTE（私有聚合）、$PUBLIC_REMOTE（公开代码）、$DOCS_REMOTE（私有文档）"
+echo "完成：${KOPS_REMOTE}（私有聚合）、${PUBLIC_REMOTE}（公开代码）、${DOCS_REMOTE}（私有文档）"
