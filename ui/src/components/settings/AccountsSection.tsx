@@ -5,6 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/u
 import { ipc } from "@/lib/ipc"
 import { strings } from "@/lib/strings"
 import type { SettingsView } from "@/lib/types"
+import { useUnsavedChanges } from "@/lib/unsaved-changes"
 import { SettingRow, SettingsCard } from "./parts"
 import { isNonNegativeInteger, useApplySetting } from "./hooks"
 
@@ -13,6 +14,7 @@ export function AccountsSection({ data }: { data: SettingsView }) {
   const [maxRpm, setMaxRpm] = useState(String(data.maxRpmPerCredential))
   const rpmError = isNonNegativeInteger(maxRpm) ? null : strings.settings.invalidNumber
   const rpmDirty = Number(maxRpm) !== data.maxRpmPerCredential
+  useUnsavedChanges("settings:accounts", rpmDirty)
 
   return (
     <SettingsCard>

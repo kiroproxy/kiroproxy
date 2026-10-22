@@ -8,6 +8,7 @@ import { useUpdateRuntimeConfig } from "@/lib/queries"
 import { markSaved } from "@/lib/save-status"
 import { strings } from "@/lib/strings"
 import type { RuntimeConfigPatch, SettingsView, TestConnectionResult } from "@/lib/types"
+import { useUnsavedChanges } from "@/lib/unsaved-changes"
 import { cn } from "@/lib/utils"
 import { SettingRow, SettingsCard } from "./parts"
 
@@ -66,13 +67,18 @@ export function NetworkSection({ data }: { data: SettingsView }) {
   const regionError = form.region.trim() ? null : strings.settings.invalidRegion
   const patch = buildPatch(data, form)
   const dirty = Object.keys(patch).length > 0
+  useUnsavedChanges("settings:network", dirty)
 
   const save = () =>
     update.mutate(patch, {
       onSuccess: (result) => {
         markSaved(result.restartRequired)
         setForm(fromSettings(result.settings))
-        toast.success(strings.settings.saveStatusRestart)
+        toast.success(
+          result.restartRequired.length > 0
+            ? strings.settings.savedNeedsRestart
+            : strings.settings.saveStatusSaved,
+        )
       },
     })
 

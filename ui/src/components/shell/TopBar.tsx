@@ -1,6 +1,17 @@
 import { useEffect, useRef, type MouseEvent } from "react"
 import { getCurrentWindow } from "@tauri-apps/api/window"
-import { ArrowDownToLineIcon, CheckIcon, MoonIcon, SettingsIcon, SunIcon, SunMoonIcon } from "lucide-react"
+import {
+  ArrowDownToLineIcon,
+  CheckIcon,
+  MoonIcon,
+  SearchIcon,
+  SettingsIcon,
+  SunIcon,
+  SunMoonIcon,
+} from "lucide-react"
+import { setCommandPaletteOpen } from "@/lib/command-palette"
+import { isMac, modKeyLabel } from "@/lib/platform"
+import { requestLeave } from "@/lib/unsaved-changes"
 import { useLocation, useNavigate } from "react-router-dom"
 import { Button } from "@/components/ui/button"
 import {
@@ -17,7 +28,6 @@ import { cn } from "@/lib/utils"
 import { isUpdateVisible, openUpdateDialog, useUpdateStatus } from "@/lib/update-status"
 import { mainNav, settingsNav, settingsSections } from "./nav"
 
-const isMac = typeof navigator !== "undefined" && navigator.userAgent.includes("Mac")
 
 export interface SegmentedNavProps {
   items: { value: string; label: string }[]
@@ -186,7 +196,7 @@ export function TopBar() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => navigate(lastAppPath.current)}
+            onClick={() => requestLeave(() => navigate(lastAppPath.current))}
             className="px-2 text-[12px] text-muted-foreground"
           >
             {strings.nav.back}
@@ -212,7 +222,7 @@ export function TopBar() {
               navigation
               items={settingsNav}
               value={activeSection}
-              onChange={(section) => navigate(`/settings/${section}`)}
+              onChange={(section) => requestLeave(() => navigate(`/settings/${section}`))}
               ariaLabel={strings.shell.settingsNavLabel}
               className="max-w-[calc(100vw-320px)] overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             />
@@ -230,6 +240,12 @@ export function TopBar() {
 
       <div className="flex shrink-0 items-center gap-1">
         <UpdatePill />
+        <IconButton
+          label={`${strings.palette.open} ${modKeyLabel}K`}
+          onClick={() => setCommandPaletteOpen(true)}
+        >
+          <SearchIcon />
+        </IconButton>
         <ThemeMenu />
         {settingsMode ? null : (
           <IconButton label={strings.nav.settings} onClick={() => navigate("/settings/service")}>

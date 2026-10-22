@@ -75,6 +75,7 @@ vi.mock("@/lib/queries", () => ({
     isLoading: false,
   }),
   useAccountBalance: () => ({ data: undefined, isLoading: false, isError: false }),
+  useStartProxy: () => ({ mutate: vi.fn(), isPending: false }),
 }))
 
 it("shows server status, today's metrics with day-over-day change and the real key", () => {

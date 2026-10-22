@@ -2,6 +2,7 @@ import { lazy, Suspense, useMemo, useState } from "react"
 import { ReceiptTextIcon } from "lucide-react"
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
+import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { DailyBarChart, type BarSeries, type DailyBar } from "@/components/charts/DailyBarChart"
@@ -11,6 +12,7 @@ import { ModelBreakdownList } from "@/components/usage/ModelBreakdownList"
 import { UsageRecordsTable } from "@/components/usage/UsageRecordsTable"
 import { dateRange, fmtCost, fmtCredits, fmtNumber, shiftDays } from "@/lib/format"
 import { useDailyUsage, useUsageBreakdown, useUsageRecords } from "@/lib/queries"
+import { useSessionState } from "@/lib/session-state"
 import { strings } from "@/lib/strings"
 import { OTHER_COLOR, seriesColor } from "@/lib/usage"
 
@@ -20,6 +22,9 @@ type RangeKey = "today" | "7d" | "30d" | "custom"
 type ChartMode = "total" | "model"
 
 const MAX_MODEL_SERIES = 4
+/** 后端区间明细只保留最新的 1 万条（MAX_FILTERED_RANGE_TOTAL）。 */
+const RECORDS_CAP = 10_000
+const ALL_DAYS = "all"
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
@@ -31,11 +36,14 @@ function Metric({ label, value }: { label: string; value: string }) {
 }
 
 export function UsagePage() {
-  const [range, setRange] = useState<RangeKey>("7d")
-  const [customFrom, setCustomFrom] = useState(shiftDays(-6))
-  const [customTo, setCustomTo] = useState(shiftDays(0))
-  const [chartMode, setChartMode] = useState<ChartMode>("total")
+  // 范围与图表模式在本次运行中保留：切到别的页面再回来不会重置。
+  const [range, setRange] = useSessionState<RangeKey>("kiroproxy.usage.range", "7d")
+  const [customFrom, setCustomFrom] = useSessionState("kiroproxy.usage.from", () => shiftDays(-6))
+  const [customTo, setCustomTo] = useSessionState("kiroproxy.usage.to", () => shiftDays(0))
+  const [chartMode, setChartMode] = useSessionState<ChartMode>("kiroproxy.usage.chart", "total")
   const [page, setPage] = useState(1)
+  // 下钻：只看某一天的调用记录（汇总和图表仍按整个范围）。
+  const [day, setDay] = useState<string | null>(null)
 
   const { from, to } = useMemo(() => {
     if (range === "today") return { from: shiftDays(0), to: shiftDays(0) }
@@ -46,9 +54,23 @@ export function UsagePage() {
 
   const daily = useDailyUsage()
   const breakdown = useUsageBreakdown(from, to)
-  const records = useUsageRecords({ from, to, page, pageSize: 50 })
+  const records = useUsageRecords({ from: day ?? from, to: day ?? to, page, pageSize: 50 })
 
   const days = useMemo(() => dateRange(from, to), [from, to])
+  const requestsByDate = useMemo(
+    () => new Map((daily.data ?? []).map((item) => [item.date, item.totalRequests])),
+    [daily.data],
+  )
+  /** 有调用记录的日期，最近的在前，供下钻选择。 */
+  const activeDays = useMemo(
+    () => days.filter((date) => (requestsByDate.get(date) ?? 0) > 0).reverse(),
+    [days, requestsByDate],
+  )
+
+  const pickDay = (next: string | null) => {
+    setDay(next)
+    setPage(1)
+  }
 
   const totals = useMemo(() => {
     const rows = (daily.data ?? []).filter((item) => item.date >= from && item.date <= to)
@@ -120,7 +142,7 @@ export function UsagePage() {
           onValueChange={(next) => {
             if (!next[0]) return
             setRange(next[0] as RangeKey)
-            setPage(1)
+            pickDay(null)
           }}
           aria-label={strings.usage.pickRange}
         >
@@ -137,7 +159,7 @@ export function UsagePage() {
               onChange={(nextFrom, nextTo) => {
                 setCustomFrom(nextFrom)
                 setCustomTo(nextTo)
-                setPage(1)
+                pickDay(null)
               }}
             />
           </Suspense>
@@ -161,6 +183,7 @@ export function UsagePage() {
               <CardDescription className="num mt-1">
                 {from} → {to}
                 {average ? ` · ${strings.usage.average} ${fmtNumber(average)}` : ""}
+                {hasData && days.length > 1 ? ` · ${strings.usage.clickBarHint}` : ""}
               </CardDescription>
             </div>
             <ToggleGroup
@@ -184,6 +207,10 @@ export function UsagePage() {
                 series={series}
                 average={chartMode === "total" ? average : undefined}
                 valueLabel={strings.usage.dailyRequests}
+                onSelect={(index) => {
+                  const date = days[index]
+                  if (date && (requestsByDate.get(date) ?? 0) > 0) pickDay(date)
+                }}
               />
               {series.length > 1 ? (
                 <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11.5px] text-muted-foreground">
@@ -219,8 +246,34 @@ export function UsagePage() {
         </Card>
       </div>
 
-      <div className="flex items-center justify-between pt-1">
-        <h2 className="font-serif text-[15px] font-semibold">{strings.usage.recordsTitle}</h2>
+      <div className="flex items-center justify-between gap-3 pt-1">
+        <div className="flex items-center gap-3">
+          <h2 className="font-serif text-[15px] font-semibold">{strings.usage.recordsTitle}</h2>
+          {activeDays.length > 1 || day ? (
+            <Select
+              value={day ?? ALL_DAYS}
+              onValueChange={(value) => pickDay(value === ALL_DAYS ? null : String(value))}
+            >
+              <SelectTrigger className="h-[26px] w-[170px]" aria-label={strings.usage.filterDay}>
+                <span className="num truncate">
+                  {day
+                    ? strings.usage.dayOption(day.slice(5), fmtNumber(requestsByDate.get(day) ?? 0))
+                    : strings.usage.allDays}
+                </span>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL_DAYS}>{strings.usage.allDays}</SelectItem>
+                {activeDays.map((date) => (
+                  <SelectItem key={date} value={date}>
+                    <span className="num">
+                      {strings.usage.dayOption(date.slice(5), fmtNumber(requestsByDate.get(date) ?? 0))}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
+        </div>
         {records.isFetching && !records.isLoading ? (
           <span className="text-[11.5px] text-muted-foreground">{strings.common.loading}</span>
         ) : null}
@@ -247,6 +300,11 @@ export function UsagePage() {
             total={records.data?.total}
             onChange={setPage}
           />
+          {(records.data?.total ?? 0) >= RECORDS_CAP ? (
+            <p className="pt-2 text-right text-[11.5px] text-muted-foreground">
+              {strings.usage.truncated(fmtNumber(RECORDS_CAP))}
+            </p>
+          ) : null}
         </div>
       )}
     </section>

@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { MemoryRouter } from "react-router-dom"
 import type { ServerStatus } from "@/lib/types"
 import { StatusCard } from "./StatusCard"
@@ -32,5 +33,25 @@ describe("StatusCard", () => {
     renderCard({ ...server, running: false, lastError: "监听失败" })
     expect(screen.getByText("代理未运行")).toBeInTheDocument()
     expect(screen.getByText("监听失败")).toHaveClass("text-text-danger")
+  })
+
+  it("lets a stopped proxy be started from the card", async () => {
+    const onStart = vi.fn()
+    render(
+      <MemoryRouter>
+        <StatusCard status={{ ...server, running: false }} available={1} total={1} onStart={onStart} />
+      </MemoryRouter>,
+    )
+    await userEvent.click(screen.getByRole("button", { name: "启动代理" }))
+    expect(onStart).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not offer to start a proxy that is already running", () => {
+    render(
+      <MemoryRouter>
+        <StatusCard status={server} available={1} total={1} onStart={vi.fn()} />
+      </MemoryRouter>,
+    )
+    expect(screen.queryByRole("button", { name: "启动代理" })).not.toBeInTheDocument()
   })
 })

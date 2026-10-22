@@ -2,6 +2,7 @@ import { useLocation } from "react-router-dom"
 import { cn } from "@/lib/utils"
 import { strings } from "@/lib/strings"
 import { useSaveStatus } from "@/lib/save-status"
+import { useHasUnsavedChanges } from "@/lib/unsaved-changes"
 import { serverDotClass, serverState, type ShellStatus } from "./use-shell-status"
 import { openUpdateDialog, useUpdateStatus } from "@/lib/update-status"
 
@@ -12,9 +13,19 @@ function serverLabel(status: ShellStatus["server"]): string {
 
 function SaveState() {
   const save = useSaveStatus()
+  const unsaved = useHasUnsavedChanges()
   const time = save.at
     ? new Date(save.at).toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit" })
     : ""
+  // 有改动还没保存时优先提示，不能继续显示「修改即时生效」。
+  if (unsaved) {
+    return (
+      <span className="flex items-center gap-2 text-text-warning">
+        <span className="size-1.5 shrink-0 rounded-full bg-warning" />
+        {strings.settings.saveStatusUnsaved}
+      </span>
+    )
+  }
   if (save.kind === "restart") {
     return (
       <span className="flex items-center gap-2 text-text-warning">

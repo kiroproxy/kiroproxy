@@ -81,6 +81,8 @@ export const ipc = {
   retryStartup: () => call<ServerStatus>("retry_startup"),
   openDataDir: () => call<void>("open_data_dir"),
   openFile: (kind: "config" | "credentials" | "log") => call<void>("open_file", { kind }),
+  /** 在系统浏览器打开固定的外部链接（后端只认这几个）。 */
+  openLink: (kind: "project" | "kiro2cc" | "kiro_rs") => call<void>("open_link", { kind }),
   clearLogs: () => call<void>("clear_logs"),
   quitApp: () => call<void>("quit_app"),
 

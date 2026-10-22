@@ -1,13 +1,18 @@
 import { Suspense, useEffect, useRef, useState, type ReactNode } from "react"
 import { toast } from "sonner"
-import { Outlet, useLocation } from "react-router-dom"
+import { Outlet, useLocation, useNavigate } from "react-router-dom"
 import { Skeleton } from "@/components/ui/skeleton"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import { toggleCommandPalette } from "@/lib/command-palette"
+import { hasModKey } from "@/lib/platform"
 import { strings } from "@/lib/strings"
+import { requestLeave } from "@/lib/unsaved-changes"
 import { bindUpdateEvents, openUpdateDialog, useUpdateStatus } from "@/lib/update-status"
 import { UpdateDialog } from "@/components/update/UpdateDialog"
 import { cn } from "@/lib/utils"
-import { isSettingsSection } from "./nav"
+import { CommandPalette } from "./CommandPalette"
+import { LeaveGuardDialog } from "./LeaveGuardDialog"
+import { isSettingsSection, mainNav } from "./nav"
 import { PageHeaderSetterContext, PageHeaderValueContext, type PageHeader } from "./page-header"
 import { StatusBar } from "./StatusBar"
 import { Toolbar } from "./Toolbar"
@@ -28,6 +33,7 @@ function usePageMeta(): PageMeta {
   if (pathname === "/") return content(strings.overview.title, strings.overview.subtitle)
   if (pathname.startsWith("/accounts/")) return content(strings.accounts.details, "")
   if (pathname.startsWith("/accounts")) return content(strings.accounts.title, strings.accounts.subtitle)
+  if (pathname.startsWith("/keys/")) return content(strings.keys.details, "")
   if (pathname.startsWith("/keys")) return content(strings.keys.title, strings.keys.subtitle)
   if (pathname.startsWith("/usage")) return content(strings.usage.title, strings.usage.subtitle)
   if (pathname.startsWith("/logs")) return content(strings.logs.title, strings.logs.subtitle)
@@ -71,6 +77,32 @@ export function AppShell({ children }: { children?: ReactNode }) {
 
   useEffect(() => bindUpdateEvents(), [])
 
+  // 桌面应用常用快捷键：⌘K 命令面板，⌘1–6 切换页面，⌘, 打开设置（Windows / Linux 用 Ctrl）。
+  const navigate = useNavigate()
+  const inSettings = pathname.startsWith("/settings")
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!hasModKey(event)) return
+      if (event.key.toLowerCase() === "k") {
+        event.preventDefault()
+        toggleCommandPalette()
+        return
+      }
+      if (event.key === ",") {
+        event.preventDefault()
+        if (!inSettings) navigate("/settings/service")
+        return
+      }
+      const page = /^[1-9]$/.test(event.key) ? mainNav[Number(event.key) - 1] : undefined
+      if (page) {
+        event.preventDefault()
+        requestLeave(() => navigate(page.value))
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [navigate, inSettings])
+
   // 更新包下载完成后提示一次；同一版本只提醒一次
   useEffect(() => {
     const version = update.latestVersion
@@ -112,6 +144,8 @@ export function AppShell({ children }: { children?: ReactNode }) {
             </main>
             <StatusBar status={shellStatus} />
             <UpdateDialog />
+            <LeaveGuardDialog />
+            <CommandPalette />
           </div>
         </PageHeaderValueContext.Provider>
       </PageHeaderSetterContext.Provider>

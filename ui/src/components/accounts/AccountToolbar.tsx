@@ -13,6 +13,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { accountStatusFilters, type AccountStatusFilter } from "@/lib/account-status"
+import { hasModKey, modKeyLabel } from "@/lib/platform"
 import { strings } from "@/lib/strings"
 
 export type AccountSort = "account" | "remaining" | "priority"
@@ -68,9 +69,10 @@ export function AccountToolbar({
 }: AccountToolbarProps) {
   const searchRef = useRef<HTMLInputElement>(null)
 
+  // ⌘K 已是全局命令面板，账号搜索用「查找」的习惯键 ⌘F。
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      if (hasModKey(event) && event.key.toLowerCase() === "f") {
         event.preventDefault()
         searchRef.current?.focus()
       }
@@ -99,7 +101,7 @@ export function AccountToolbar({
           className="w-52 rounded-full pr-10 pl-8"
         />
         <kbd className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 font-mono text-[10.5px] text-faint">
-          ⌘K
+          {modKeyLabel}F
         </kbd>
       </div>
 

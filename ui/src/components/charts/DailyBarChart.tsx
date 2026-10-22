@@ -24,11 +24,14 @@ export function DailyBarChart({
   series,
   average,
   valueLabel,
+  onSelect,
 }: {
   data: DailyBar[]
   series: BarSeries[]
   average?: number
   valueLabel: string
+  /** 点击某一天的柱子（参数为 data 中的下标）；用于下钻到当天的调用记录。 */
+  onSelect?: (index: number) => void
 }) {
   const config = Object.fromEntries(
     series.map((item) => [item.key, { label: item.label, color: item.color }]),
@@ -89,6 +92,8 @@ export function DailyBarChart({
             fill={`var(--color-${item.key})`}
             barSize={data.length > 14 ? 14 : 24}
             radius={!stacked || index === series.length - 1 ? [4, 4, 0, 0] : 0}
+            className={onSelect ? "cursor-pointer" : undefined}
+            onClick={onSelect ? (_, dataIndex) => onSelect(dataIndex) : undefined}
           />
         ))}
       </BarChart>

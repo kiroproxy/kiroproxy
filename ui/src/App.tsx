@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/sonner"
 import { AppShell } from "@/components/shell/AppShell"
 import { StartupError } from "@/components/shell/StartupError"
 import { ipc } from "@/lib/ipc"
+import { useOauthNotifications } from "@/lib/oauth-notifications"
 import { createQueryClient } from "@/lib/queries"
 import type { IpcErrorShape } from "@/lib/types"
 import { OverviewPage } from "@/routes/overview"
@@ -15,6 +16,7 @@ const AccountDetailPage = lazy(() =>
   import("@/routes/account-detail").then((m) => ({ default: m.AccountDetailPage })),
 )
 const KeysPage = lazy(() => import("@/routes/keys").then((m) => ({ default: m.KeysPage })))
+const KeyDetailPage = lazy(() => import("@/routes/key-detail").then((m) => ({ default: m.KeyDetailPage })))
 const UsagePage = lazy(() => import("@/routes/usage").then((m) => ({ default: m.UsagePage })))
 const LogsPage = lazy(() => import("@/routes/logs").then((m) => ({ default: m.LogsPage })))
 const ModelsPage = lazy(() => import("@/routes/models").then((m) => ({ default: m.ModelsPage })))
@@ -22,6 +24,12 @@ const SettingsPage = lazy(() => import("@/routes/settings").then((m) => ({ defau
 const ConnectPage = lazy(() => import("@/routes/connect").then((m) => ({ default: m.ConnectPage })))
 
 const queryClient = createQueryClient()
+
+/** 全局后台通知：浏览器登录在弹窗关闭后完成时也能提示结果。 */
+function BackgroundNotifications() {
+  useOauthNotifications()
+  return null
+}
 
 function App() {
   const [startupError, setStartupError] = useState<IpcErrorShape | null>(null)
@@ -64,6 +72,7 @@ function App() {
             <Route path="accounts" element={<AccountsPage />} />
             <Route path="accounts/:id" element={<AccountDetailPage />} />
             <Route path="keys" element={<KeysPage />} />
+            <Route path="keys/:id" element={<KeyDetailPage />} />
             <Route path="usage" element={<UsagePage />} />
             <Route path="logs" element={<LogsPage />} />
             <Route path="models" element={<ModelsPage />} />
@@ -74,6 +83,7 @@ function App() {
           </Route>
         </Routes>
       </HashRouter>
+      <BackgroundNotifications />
       <Toaster />
     </QueryClientProvider>
   )

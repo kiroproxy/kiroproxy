@@ -7,6 +7,7 @@ import { AddAccountDialog } from "./AddAccountDialog"
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
+  createAccount: vi.fn(),
   listeners: new Map<string, (event: { payload: unknown }) => void>(),
 }))
 
@@ -19,11 +20,11 @@ vi.mock("@tauri-apps/api/event", () => ({
   },
 }))
 
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
 
 vi.mock("@/lib/queries", () => ({
   queryKeys: { accounts: ["accounts"] },
-  useCreateAccount: () => ({ mutate: vi.fn(), isPending: false }),
+  useCreateAccount: () => ({ mutate: mocks.createAccount, isPending: false }),
   useImportKam: () => ({ mutate: vi.fn(), isPending: false }),
   useImportKiroIde: () => ({ mutate: vi.fn(), isPending: false }),
 }))
@@ -35,7 +36,7 @@ function backendStatus(status: OauthStatus) {
   )
 }
 
-function renderDialog(tab: "oauth" | "kam") {
+function renderDialog(tab: "oauth" | "kam" | "manual") {
   const onOpenChange = vi.fn()
   render(
     <QueryClientProvider client={new QueryClient()}>
@@ -55,8 +56,11 @@ async function renderOauthTab() {
 
 beforeEach(() => {
   mocks.invoke.mockReset()
+  mocks.createAccount.mockReset()
   mocks.listeners.clear()
   vi.mocked(toast.success).mockClear()
+  vi.mocked(toast.error).mockClear()
+  vi.mocked(toast.info).mockClear()
 })
 
 describe("AddAccountDialog browser login", () => {
@@ -81,7 +85,27 @@ describe("AddAccountDialog browser login", () => {
     })
 
     expect(onOpenChange).toHaveBeenCalledWith(false)
-    expect(toast.success).toHaveBeenCalledWith("账号已添加：主账号")
+    // 成功提示由全局的 useOauthNotifications 统一弹出，表单不再重复提示。
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+
+  it("tells the user a pending login keeps running after the dialog closes", async () => {
+    backendStatus({ phase: "waiting", verificationUrl: "https://app.kiro.dev/signin" })
+    const client = new QueryClient()
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <AddAccountDialog open tab="oauth" onOpenChange={vi.fn()} />
+      </QueryClientProvider>,
+    )
+    expect(await screen.findByText(/请在浏览器中完成登录/)).toBeInTheDocument()
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <AddAccountDialog open={false} tab="oauth" onOpenChange={vi.fn()} />
+      </QueryClientProvider>,
+    )
+
+    await waitFor(() => expect(toast.info).toHaveBeenCalledWith("登录会在后台继续，完成后会通知你"))
   })
 })
 
@@ -110,5 +134,37 @@ describe("AddAccountDialog KAM import", () => {
     const scroller = (await screen.findByRole("table")).closest(".overflow-y-auto")
     expect(scroller).toHaveClass("max-h-[240px]")
     expect(scroller).not.toContainElement(screen.getByRole("button", { name: "导入" }))
+  })
+})
+
+describe("AddAccountDialog manual form", () => {
+  it("only shows the client fields the chosen auth method needs", async () => {
+    const user = userEvent.setup()
+    renderDialog("manual")
+
+    expect(screen.queryByLabelText("Client ID")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Client Secret")).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole("combobox", { name: "认证方式" }))
+    await user.click(await screen.findByRole("option", { name: "idc" }))
+    expect(screen.getByLabelText("Client ID")).toBeInTheDocument()
+    expect(screen.getByLabelText("Client Secret")).toBeInTheDocument()
+
+    await user.click(screen.getByRole("combobox", { name: "认证方式" }))
+    await user.click(await screen.findByRole("option", { name: "external_idp" }))
+    expect(screen.getByLabelText("Client ID")).toBeInTheDocument()
+    expect(screen.queryByLabelText("Client Secret")).not.toBeInTheDocument()
+  })
+
+  it("explains a missing refresh token next to the field instead of in a toast", async () => {
+    const user = userEvent.setup()
+    renderDialog("manual")
+
+    await user.click(screen.getByRole("button", { name: "添加" }))
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Refresh Token 不能为空")
+    expect(screen.getByLabelText("Refresh Token")).toHaveAttribute("aria-invalid", "true")
+    expect(mocks.createAccount).not.toHaveBeenCalled()
+    expect(toast.error).not.toHaveBeenCalled()
   })
 })

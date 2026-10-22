@@ -1,3 +1,4 @@
+import { toast } from "sonner"
 import { AlertList } from "@/components/overview/AlertList"
 import { ConnectCard } from "@/components/overview/ConnectCard"
 import { CurrentAccount } from "@/components/overview/CurrentAccount"
@@ -6,7 +7,7 @@ import { OnboardingCard } from "@/components/overview/OnboardingCard"
 import { StatusCard } from "@/components/overview/StatusCard"
 import { UsageTrend } from "@/components/overview/UsageTrend"
 import { shiftDays } from "@/lib/format"
-import { useAccounts, useDailyUsage, useRpm, useServerStatus } from "@/lib/queries"
+import { useAccounts, useDailyUsage, useRpm, useServerStatus, useStartProxy } from "@/lib/queries"
 import { strings } from "@/lib/strings"
 import type { DailySummary } from "@/lib/types"
 
@@ -20,6 +21,7 @@ export function OverviewPage() {
   const daily = useDailyUsage()
   const rpm = useRpm()
   const server = useServerStatus()
+  const start = useStartProxy()
 
   const status = server.data
   const baseUrl = status?.baseUrl || `http://${status?.host ?? "127.0.0.1"}:${status?.port ?? 5678}`
@@ -35,6 +37,10 @@ export function OverviewPage() {
           status={status}
           available={accounts.data?.available ?? 0}
           total={accounts.data?.total ?? 0}
+          starting={start.isPending}
+          onStart={() =>
+            start.mutate(undefined, { onSuccess: () => toast.success(strings.settings.started) })
+          }
         />
         {noAccounts ? <OnboardingCard /> : <ConnectCard baseUrl={baseUrl} />}
       </div>

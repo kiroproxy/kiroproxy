@@ -1,4 +1,6 @@
 import { Navigate, useParams } from "react-router-dom"
+import { ExternalLinkIcon } from "lucide-react"
+import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { AccountsSection } from "@/components/settings/AccountsSection"
@@ -11,6 +13,7 @@ import { UpdateCard } from "@/components/settings/UpdateCard"
 import { SegmentedNav } from "@/components/shell/TopBar"
 import { LoadError } from "@/components/shell/LoadError"
 import { isSettingsSection } from "@/components/shell/nav"
+import { errorMessage, ipc } from "@/lib/ipc"
 import { useSettings } from "@/lib/queries"
 import { strings } from "@/lib/strings"
 import { themeOptions, useTheme, type Theme } from "@/lib/theme"
@@ -38,22 +41,43 @@ function AppearanceSection() {
   )
 }
 
+/** 在系统浏览器打开外部链接。 */
+function ExternalLink({ kind, children }: { kind: Parameters<typeof ipc.openLink>[0]; children: string }) {
+  const open = () => {
+    ipc.openLink(kind).catch((error: unknown) => toast.error(errorMessage(error)))
+  }
+  return (
+    <button
+      type="button"
+      onClick={open}
+      className="inline-flex items-center gap-1 rounded-[6px] text-[12px] font-medium text-primary outline-none hover:underline focus-visible:ring-1 focus-visible:ring-primary/60"
+    >
+      {children}
+      <ExternalLinkIcon className="size-3" aria-hidden="true" />
+    </button>
+  )
+}
+
 function AboutSection({ data }: { data: SettingsView }) {
   return (
     <>
       <SettingsCard>
-      <SettingRow label={strings.settings.version}>
-        <code className="font-mono text-[12px]">v{data.version}</code>
-      </SettingRow>
-      <SettingRow label={strings.settings.upstreamCredit}>
-        <span className="text-[12px] text-muted-foreground">TsinHzl/kiro2cc-proxy · hank9999/kiro.rs</span>
-      </SettingRow>
-      <SettingRow label={strings.settings.license}>
-        <span className="text-[12px] text-muted-foreground">MIT</span>
-      </SettingRow>
-      <SettingRow label={strings.settings.projectLink}>
-        <span className="text-[12px] text-muted-foreground">github.com/kiroproxy/kiroproxy</span>
-      </SettingRow>
+        <SettingRow label={strings.settings.version}>
+          <code className="font-mono text-[12px]">v{data.version}</code>
+        </SettingRow>
+        <SettingRow label={strings.settings.upstreamCredit}>
+          <ExternalLink kind="kiro2cc">TsinHzl/kiro2cc-proxy</ExternalLink>
+          <span className="text-[12px] text-faint" aria-hidden="true">
+            ·
+          </span>
+          <ExternalLink kind="kiro_rs">hank9999/kiro.rs</ExternalLink>
+        </SettingRow>
+        <SettingRow label={strings.settings.license}>
+          <span className="text-[12px] text-muted-foreground">MIT</span>
+        </SettingRow>
+        <SettingRow label={strings.settings.projectLink}>
+          <ExternalLink kind="project">github.com/kiroproxy/kiroproxy</ExternalLink>
+        </SettingRow>
       </SettingsCard>
       <UpdateCard />
     </>

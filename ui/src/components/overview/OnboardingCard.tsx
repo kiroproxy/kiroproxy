@@ -39,11 +39,12 @@ export function OnboardingCard() {
       </ol>
 
       <div className="relative flex flex-wrap items-center gap-2">
-        <Button nativeButton={false} render={<Link to="/accounts?add=kam" />}>
-          {strings.onboarding.importKam}
+        {/* 浏览器登录不需要手动粘贴 refreshToken，作为首选；其他方式在添加对话框的页签里 */}
+        <Button nativeButton={false} render={<Link to="/accounts?add=oauth" />}>
+          {strings.onboarding.browserLogin}
         </Button>
-        <Button nativeButton={false} variant="secondary" render={<Link to="/accounts?add=manual" />}>
-          {strings.onboarding.manualAdd}
+        <Button nativeButton={false} variant="secondary" render={<Link to="/accounts?add=kiroide" />}>
+          {strings.onboarding.importKiroIde}
         </Button>
       </div>
       <Link

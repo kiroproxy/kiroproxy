@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { useQueryClient } from "@tanstack/react-query"
-import { Loader2Icon, LogInIcon } from "lucide-react"
+import { ChevronRightIcon, Loader2Icon, LogInIcon } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -25,7 +24,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { errorMessage, ipc } from "@/lib/ipc"
-import { queryKeys, useCreateAccount, useImportKam, useImportKiroIde } from "@/lib/queries"
+import { useLoginFormPresence } from "@/lib/oauth-notifications"
+import { useCreateAccount, useImportKam, useImportKiroIde } from "@/lib/queries"
 import { strings } from "@/lib/strings"
 import { fmtDateTime } from "@/lib/format"
 import type { AddCredentialRequest, KamPreview, KiroIdePreview, OauthStatus } from "@/lib/types"
@@ -39,15 +39,27 @@ function isPendingLogin(status?: OauthStatus | null): status is OauthStatus {
 
 /** 浏览器登录页签：打开 Kiro 官方登录页（和 IDE/CLI 一样在网页里选择账号）→ 自动建号 */
 function BrowserLoginForm({ onDone }: { onDone: () => void }) {
-  const queryClient = useQueryClient()
   const [status, setStatus] = useState<OauthStatus | null>(null)
   const [busy, setBusy] = useState(false)
   const doneRef = useRef(onDone)
   const handledSuccess = useRef(false)
+  const pendingRef = useRef(false)
+  useLoginFormPresence()
 
   useEffect(() => {
     doneRef.current = onDone
   }, [onDone])
+
+  // 登录还没完成就关掉弹窗（或切到别的页签）时，登录在后台继续，提醒一下结果会另行通知。
+  useEffect(() => {
+    pendingRef.current = isPendingLogin(status)
+  }, [status])
+  useEffect(
+    () => () => {
+      if (pendingRef.current) toast.info(strings.accounts.oauth.continuesInBackground)
+    },
+    [],
+  )
 
   useEffect(() => {
     let disposed = false
@@ -77,13 +89,12 @@ function BrowserLoginForm({ onDone }: { onDone: () => void }) {
     }
   }, [])
 
+  // 成功提示和刷新账号列表由全局的 useOauthNotifications 负责（弹窗关着时也要提示），这里只关弹窗。
   useEffect(() => {
     if (status?.phase !== "success" || handledSuccess.current) return
     handledSuccess.current = true
-    void queryClient.invalidateQueries({ queryKey: queryKeys.accounts })
-    toast.success(status.message ?? strings.accounts.oauth.success)
     doneRef.current()
-  }, [queryClient, status?.phase, status?.message])
+  }, [status?.phase])
 
   const start = async () => {
     setBusy(true)
@@ -174,17 +185,23 @@ function ManualForm({ onDone }: { onDone: () => void }) {
   const [apiRegion, setApiRegion] = useState("")
   const [proxyUrl, setProxyUrl] = useState("")
   const [priority, setPriority] = useState("0")
+  const [submitted, setSubmitted] = useState(false)
+
+  // 只显示当前认证方式用得上的字段：idc 刷新需要 clientId + clientSecret，external_idp 只要 clientId；
+  // external_idp 的 Profile ARN 因租户而异、后端无法代填，所以放在外面，其余方式放进「高级选项」。
+  const needsClientId = authMethod === "idc" || authMethod === "external_idp"
+  const needsClientSecret = authMethod === "idc"
+  const profileArnUpfront = authMethod === "external_idp"
+  const tokenError = submitted && !refreshToken.trim() ? strings.accounts.refreshTokenRequired : null
 
   const submit = () => {
-    if (!refreshToken.trim()) {
-      toast.error(strings.accounts.refreshTokenRequired)
-      return
-    }
+    setSubmitted(true)
+    if (!refreshToken.trim()) return
     const req: AddCredentialRequest = {
       refreshToken: refreshToken.trim(),
       authMethod,
-      clientId: clientId || undefined,
-      clientSecret: clientSecret || undefined,
+      clientId: needsClientId ? clientId.trim() || undefined : undefined,
+      clientSecret: needsClientSecret ? clientSecret || undefined : undefined,
       provider: provider || undefined,
       profileArn: profileArn || undefined,
       authRegion: authRegion || undefined,
@@ -200,10 +217,16 @@ function ManualForm({ onDone }: { onDone: () => void }) {
     })
   }
 
+  const profileArnField = (
+    <FormField label={strings.accounts.manual.profileArn}>
+      <Input value={profileArn} onChange={(e) => setProfileArn(e.target.value)} placeholder="arn:aws:codewhisperer:..." />
+    </FormField>
+  )
+
   return (
     <div className="grid gap-3 md:grid-cols-2">
       <div className="md:col-span-2">
-        <FormField label={strings.accounts.manual.refreshToken}>
+        <FormField label={strings.accounts.manual.refreshToken} error={tokenError}>
           <Textarea
             value={refreshToken}
             rows={2}
@@ -225,34 +248,52 @@ function ManualForm({ onDone }: { onDone: () => void }) {
           </SelectContent>
         </Select>
       </FormField>
-      <FormField label={strings.accounts.manual.provider}>
-        <Input value={provider} onChange={(e) => setProvider(e.target.value)} placeholder="Google / GitHub" />
-      </FormField>
-      <FormField label={strings.accounts.manual.clientId}>
-        <Input value={clientId} onChange={(e) => setClientId(e.target.value)} />
-      </FormField>
-      <FormField label={strings.accounts.manual.clientSecret}>
-        <Input
-          type="password"
-          value={clientSecret}
-          onChange={(e) => setClientSecret(e.target.value)}
-        />
-      </FormField>
-      <FormField label={strings.accounts.manual.authRegion}>
-        <Input value={authRegion} onChange={(e) => setAuthRegion(e.target.value)} placeholder="us-east-1" />
-      </FormField>
-      <FormField label={strings.accounts.manual.apiRegion}>
-        <Input value={apiRegion} onChange={(e) => setApiRegion(e.target.value)} placeholder="us-east-1" />
-      </FormField>
-      <FormField label={strings.accounts.manual.profileArn}>
-        <Input value={profileArn} onChange={(e) => setProfileArn(e.target.value)} />
-      </FormField>
-      <FormField label={strings.accounts.manual.proxyUrl}>
-        <Input value={proxyUrl} onChange={(e) => setProxyUrl(e.target.value)} placeholder="http://127.0.0.1:7890" />
-      </FormField>
-      <FormField label={strings.accounts.manual.priority}>
-        <Input type="number" min={0} value={priority} onChange={(e) => setPriority(e.target.value)} />
-      </FormField>
+      {needsClientId ? (
+        <FormField label={strings.accounts.manual.clientId}>
+          <Input value={clientId} onChange={(e) => setClientId(e.target.value)} />
+        </FormField>
+      ) : null}
+      {needsClientSecret ? (
+        <FormField label={strings.accounts.manual.clientSecret}>
+          <Input
+            type="password"
+            autoComplete="off"
+            value={clientSecret}
+            onChange={(e) => setClientSecret(e.target.value)}
+          />
+        </FormField>
+      ) : null}
+      {profileArnUpfront ? profileArnField : null}
+
+      <details className="group rounded-[12px] border border-border md:col-span-2">
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-[12px] px-3 py-2 text-[12.5px] font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/60 [&::-webkit-details-marker]:hidden">
+          <ChevronRightIcon className="size-3.5 transition-transform group-open:rotate-90" aria-hidden="true" />
+          {strings.accounts.manual.advanced}
+        </summary>
+        <div className="grid gap-3 px-3 pb-3 md:grid-cols-2">
+          <FormField label={strings.accounts.manual.provider}>
+            <Input value={provider} onChange={(e) => setProvider(e.target.value)} placeholder="Google / GitHub" />
+          </FormField>
+          {profileArnUpfront ? null : profileArnField}
+          <FormField label={strings.accounts.manual.authRegion}>
+            <Input value={authRegion} onChange={(e) => setAuthRegion(e.target.value)} placeholder="us-east-1" />
+          </FormField>
+          <FormField label={strings.accounts.manual.apiRegion}>
+            <Input value={apiRegion} onChange={(e) => setApiRegion(e.target.value)} placeholder="us-east-1" />
+          </FormField>
+          <FormField label={strings.accounts.manual.proxyUrl}>
+            <Input
+              value={proxyUrl}
+              onChange={(e) => setProxyUrl(e.target.value)}
+              placeholder="http://127.0.0.1:7890"
+            />
+          </FormField>
+          <FormField label={strings.accounts.manual.priority}>
+            <Input type="number" min={0} value={priority} onChange={(e) => setPriority(e.target.value)} />
+          </FormField>
+        </div>
+      </details>
+
       <div className="flex justify-end md:col-span-2">
         <Button onClick={submit} disabled={create.isPending}>
           {strings.accounts.manual.submit}

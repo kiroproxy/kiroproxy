@@ -7,20 +7,39 @@ import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/u
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { usePageHeader } from "@/components/shell/page-header"
 import { errorMessage, ipc } from "@/lib/ipc"
-import { useApiKeys, useServerStatus } from "@/lib/queries"
+import { useApiKeys, useModels, useServerStatus } from "@/lib/queries"
 import { strings } from "@/lib/strings"
 
-function CodeBlock({ code, label }: { code: string; label: string }) {
+/** 模型列表还没取到（或上游不可用）时的兜底模型。 */
+const FALLBACK_MODEL = "gpt-5.6-terra"
+
+/**
+ * 代码片段：页面上显示掩码密钥，复制时由 resolve 生成带真实密钥的版本，
+ * 和概览页「复制环境变量」、密钥页「复制」的行为一致。
+ */
+function CodeBlock({
+  label,
+  code,
+  resolve,
+}: {
+  label: string
+  code: string
+  resolve: () => Promise<string>
+}) {
   const [copied, setCopied] = useState(false)
+  const [busy, setBusy] = useState(false)
 
   const copy = async () => {
+    setBusy(true)
     try {
-      await navigator.clipboard.writeText(code)
+      await navigator.clipboard.writeText(await resolve())
       setCopied(true)
       toast.success(strings.common.copied)
       window.setTimeout(() => setCopied(false), 1600)
     } catch (error) {
       toast.error(errorMessage(error))
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -28,7 +47,7 @@ function CodeBlock({ code, label }: { code: string; label: string }) {
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between gap-2">
         <span className="font-mono text-[11.5px] text-muted-foreground">{label}</span>
-        <Button variant="secondary" size="sm" onClick={() => void copy()}>
+        <Button variant="secondary" size="sm" onClick={() => void copy()} disabled={busy}>
           {copied ? <CheckIcon /> : <CopyIcon />}
           {copied ? strings.common.copied : strings.common.copy}
         </Button>
@@ -40,11 +59,68 @@ function CodeBlock({ code, label }: { code: string; label: string }) {
   )
 }
 
+function ModelPicker({
+  value,
+  models,
+  onChange,
+}: {
+  value: string
+  models: string[]
+  onChange: (model: string) => void
+}) {
+  return (
+    <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
+      <span>{strings.connect.model}</span>
+      <Select value={value} onValueChange={(next) => onChange(String(next))}>
+        <SelectTrigger className="w-[240px]" aria-label={strings.connect.model}>
+          <span className="truncate font-mono text-[12px]">{value}</span>
+        </SelectTrigger>
+        <SelectContent>
+          {models.map((model) => (
+            <SelectItem key={model} value={model}>
+              <span className="font-mono text-[12px]">{model}</span>
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  )
+}
+
+const snippets = {
+  claudeEnv: (baseUrl: string, apiKey: string) =>
+    `export ANTHROPIC_BASE_URL="${baseUrl}"
+export ANTHROPIC_API_KEY="${apiKey}"`,
+  claudeSettings: (baseUrl: string, apiKey: string) =>
+    JSON.stringify({ env: { ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_API_KEY: apiKey } }, null, 2),
+  codexConfig: (baseUrl: string, model: string) => `model = "${model}"
+model_provider = "kiro"
+
+[model_providers.kiro]
+name = "KiroProxy"
+base_url = "${baseUrl}/v1"
+wire_api = "responses"
+env_key = "KIRO_API_KEY"`,
+  codexEnv: (apiKey: string) => `KIRO_API_KEY=${apiKey}`,
+  openaiPython: (baseUrl: string, apiKey: string, model: string) => `from openai import OpenAI
+
+client = OpenAI(base_url="${baseUrl}/v1", api_key="${apiKey}")
+resp = client.chat.completions.create(
+    model="${model}",
+    messages=[{"role": "user", "content": "你好"}],
+)
+print(resp.choices[0].message.content)`,
+  ccSwitch: (baseUrl: string, apiKey: string) =>
+    JSON.stringify({ name: "KiroProxy", baseUrl, apiKey }, null, 2),
+}
+
 export function ConnectPage() {
   const server = useServerStatus()
   const keys = useApiKeys()
+  const models = useModels()
   const [keyId, setKeyId] = useState<string>("")
   const [secret, setSecret] = useState("")
+  const [modelChoice, setModelChoice] = useState<string | null>(null)
 
   usePageHeader({ back: -1 }, [])
 
@@ -57,6 +133,16 @@ export function ConnectPage() {
       keys.data?.[0],
     [keyId, keys.data],
   )
+
+  // 模型从上游列表里选；默认优先 GPT / Codex 系，列表不可用时退回兜底模型。
+  const modelIds = useMemo(() => {
+    const ids = (models.data ?? []).map((model) => model.id)
+    return ids.length > 0 ? ids : [FALLBACK_MODEL]
+  }, [models.data])
+  const model =
+    (modelChoice && modelIds.includes(modelChoice) ? modelChoice : null) ??
+    modelIds.find((id) => /gpt|codex/i.test(id)) ??
+    modelIds[0]
 
   const toggleSecret = async () => {
     if (secret) {
@@ -71,38 +157,10 @@ export function ConnectPage() {
     }
   }
 
-  const apiKey = secret || strings.connect.keyPlaceholder
-
-  const claudeEnv = `export ANTHROPIC_BASE_URL="${baseUrl}"
-export ANTHROPIC_API_KEY="${apiKey}"`
-
-  const claudeSettings = JSON.stringify(
-    { env: { ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_API_KEY: apiKey } },
-    null,
-    2,
-  )
-
-  const codexConfig = `model = "gpt-5.6-terra"
-model_provider = "kiro"
-
-[model_providers.kiro]
-name = "KiroProxy"
-base_url = "${baseUrl}/v1"
-wire_api = "responses"
-env_key = "KIRO_API_KEY"`
-
-  const codexEnv = `KIRO_API_KEY=${apiKey}`
-
-  const openaiPython = `from openai import OpenAI
-
-client = OpenAI(base_url="${baseUrl}/v1", api_key="${apiKey}")
-resp = client.chat.completions.create(
-    model="gpt-5.6-terra",
-    messages=[{"role": "user", "content": "你好"}],
-)
-print(resp.choices[0].message.content)`
-
-  const ccSwitch = JSON.stringify({ name: "KiroProxy", baseUrl, apiKey }, null, 2)
+  // 页面上显示掩码（点「显示」后才是明文）；复制时总是填入真实密钥，未显示时临时向后端读取一次。
+  const shownKey = secret || selected?.maskedKey || strings.connect.keyPlaceholder
+  const realKey = async () =>
+    secret || (selected ? await ipc.getApiKeySecret(selected.id) : strings.connect.keyPlaceholder)
 
   return (
     <section aria-label={strings.connect.title} className="flex flex-col gap-3">
@@ -142,6 +200,9 @@ print(resp.choices[0].message.content)`
               <span className="text-[12px] text-muted-foreground">{strings.connect.noKeys}</span>
             )}
           </div>
+          {selected ? (
+            <p className="basis-full text-[11.5px] text-muted-foreground">{strings.connect.copyHint}</p>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -154,22 +215,48 @@ print(resp.choices[0].message.content)`
         </TabsList>
 
         <TabsContent value="claude" className="flex flex-col gap-4">
-          <CodeBlock label={strings.connect.envVars} code={claudeEnv} />
-          <CodeBlock label={strings.connect.settingsJson} code={claudeSettings} />
+          <CodeBlock
+            label={strings.connect.envVars}
+            code={snippets.claudeEnv(baseUrl, shownKey)}
+            resolve={async () => snippets.claudeEnv(baseUrl, await realKey())}
+          />
+          <CodeBlock
+            label={strings.connect.settingsJson}
+            code={snippets.claudeSettings(baseUrl, shownKey)}
+            resolve={async () => snippets.claudeSettings(baseUrl, await realKey())}
+          />
         </TabsContent>
 
         <TabsContent value="codex" className="flex flex-col gap-4">
-          <CodeBlock label={strings.connect.codexConfig} code={codexConfig} />
-          <CodeBlock label={strings.connect.codexEnv} code={codexEnv} />
+          <ModelPicker value={model} models={modelIds} onChange={setModelChoice} />
+          <CodeBlock
+            label={strings.connect.codexConfig}
+            code={snippets.codexConfig(baseUrl, model)}
+            resolve={async () => snippets.codexConfig(baseUrl, model)}
+          />
+          <CodeBlock
+            label={strings.connect.codexEnv}
+            code={snippets.codexEnv(shownKey)}
+            resolve={async () => snippets.codexEnv(await realKey())}
+          />
         </TabsContent>
 
         <TabsContent value="openai" className="flex flex-col gap-4">
-          <CodeBlock label={strings.connect.pythonExample} code={openaiPython} />
+          <ModelPicker value={model} models={modelIds} onChange={setModelChoice} />
+          <CodeBlock
+            label={strings.connect.pythonExample}
+            code={snippets.openaiPython(baseUrl, shownKey, model)}
+            resolve={async () => snippets.openaiPython(baseUrl, await realKey(), model)}
+          />
         </TabsContent>
 
         <TabsContent value="ccswitch" className="flex flex-col gap-3">
           <p className="text-[12.5px] text-muted-foreground">{strings.connect.ccSwitchHint}</p>
-          <CodeBlock label="cc-switch" code={ccSwitch} />
+          <CodeBlock
+            label="cc-switch"
+            code={snippets.ccSwitch(baseUrl, shownKey)}
+            resolve={async () => snippets.ccSwitch(baseUrl, await realKey())}
+          />
         </TabsContent>
       </Tabs>
     </section>

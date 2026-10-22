@@ -9,6 +9,9 @@ export interface StatusCardProps {
   status?: ServerStatus
   available: number
   total: number
+  /** 代理停止时在卡片上直接启动。 */
+  onStart?: () => void
+  starting?: boolean
 }
 
 function uptimeText(startedAt?: string | null): string | null {
@@ -49,7 +52,7 @@ const stateLabel: Record<ServerState, string> = {
   stopped: strings.status.stopped,
 }
 
-export function StatusCard({ status, available, total }: StatusCardProps) {
+export function StatusCard({ status, available, total, onStart, starting = false }: StatusCardProps) {
   const state = serverState(status)
   const running = state === "running" || state === "degraded"
   const hasAccounts = total > 0
@@ -113,7 +116,17 @@ export function StatusCard({ status, available, total }: StatusCardProps) {
           ) : null}
 
           <div className="mt-5 flex flex-wrap items-center gap-2">
-            <Button nativeButton={false} render={<Link to="/accounts" />}>
+            {/* 代理停止时最要紧的是把它启动起来，主按钮让给「启动代理」 */}
+            {state === "stopped" && onStart ? (
+              <Button onClick={onStart} disabled={starting}>
+                {starting ? strings.overview.startingProxy : strings.overview.startProxy}
+              </Button>
+            ) : null}
+            <Button
+              nativeButton={false}
+              variant={state === "stopped" && onStart ? "secondary" : "default"}
+              render={<Link to="/accounts" />}
+            >
               {hasAccounts ? strings.overview.manageAccounts : strings.overview.addFirstAccount}
             </Button>
             <Button nativeButton={false} variant="secondary" render={<Link to="/connect" />}>

@@ -37,11 +37,12 @@ function Harness() {
   )
 }
 
-it("focuses search with cmd+k and changes the status filter", async () => {
+it("focuses search with cmd+f and changes the status filter", async () => {
   const user = userEvent.setup()
   render(<Harness />)
 
-  await user.keyboard("{Meta>}k{/Meta}")
+  // ⌘K 留给全局命令面板，账号搜索用 ⌘F。
+  await user.keyboard("{Meta>}f{/Meta}")
   expect(screen.getByRole("textbox", { name: "搜索" })).toHaveFocus()
 
   const lowQuota = screen.getByRole("button", { name: /将尽/ })

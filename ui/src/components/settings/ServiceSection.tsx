@@ -14,10 +14,11 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ipc } from "@/lib/ipc"
-import { useServerStatus, useUpdateRuntimeConfig } from "@/lib/queries"
+import { useServerStatus, useStartProxy, useStopProxy, useUpdateRuntimeConfig } from "@/lib/queries"
 import { markSaved } from "@/lib/save-status"
 import { strings } from "@/lib/strings"
 import type { SettingsView } from "@/lib/types"
+import { useUnsavedChanges } from "@/lib/unsaved-changes"
 import { serverState, type ServerState } from "@/components/shell/use-shell-status"
 import { useRestartAction } from "./hooks"
 import { SettingRow, SettingsCard } from "./parts"
@@ -36,9 +37,12 @@ export function ServiceSection({ data }: { data: SettingsView }) {
   const server = useServerStatus()
   const update = useUpdateRuntimeConfig()
   const restart = useRestartAction()
+  const start = useStartProxy()
+  const stop = useStopProxy()
   const [host, setHost] = useState(data.host)
   const [port, setPort] = useState(String(data.port))
   const [confirmHost, setConfirmHost] = useState(false)
+  const [confirmStop, setConfirmStop] = useState(false)
 
   const portNumber = Number(port)
   const portError =
@@ -48,6 +52,8 @@ export function ServiceSection({ data }: { data: SettingsView }) {
   const hostError = host.trim() ? null : strings.settings.invalidHost
   const dirty = host.trim() !== data.host || portNumber !== data.port
   const state = serverState(server.data)
+  const busy = restart.pending || start.isPending || stop.isPending
+  useUnsavedChanges("settings:service", dirty)
 
   const save = () => {
     update.mutate(
@@ -55,10 +61,22 @@ export function ServiceSection({ data }: { data: SettingsView }) {
       {
         onSuccess: (result) => {
           markSaved(result.restartRequired)
-          toast.success(strings.settings.saveStatusRestart)
+          toast.success(
+            result.restartRequired.length > 0
+              ? strings.settings.savedNeedsRestart
+              : strings.settings.saveStatusSaved,
+          )
         },
       },
     )
+  }
+
+  const startProxy = () =>
+    start.mutate(undefined, { onSuccess: () => toast.success(strings.settings.started) })
+
+  const stopProxy = () => {
+    setConfirmStop(false)
+    stop.mutate(undefined, { onSuccess: () => toast.success(strings.settings.stopped) })
   }
 
   const requestSave = () => {
@@ -119,11 +137,42 @@ export function ServiceSection({ data }: { data: SettingsView }) {
                 ? strings.status.stopped
                 : strings.status.running}
           </Badge>
-          <Button variant="secondary" size="sm" onClick={restart.run} disabled={restart.pending}>
-            {restart.pending ? strings.settings.restarting : strings.common.restart}
-          </Button>
+          {state === "stopped" ? (
+            <Button size="sm" onClick={startProxy} disabled={busy}>
+              {start.isPending ? strings.settings.starting : strings.common.start}
+            </Button>
+          ) : (
+            <>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setConfirmStop(true)}
+                disabled={busy || state === "loading"}
+              >
+                {stop.isPending ? strings.settings.stopping : strings.common.stop}
+              </Button>
+              <Button variant="secondary" size="sm" onClick={restart.run} disabled={busy || state === "loading"}>
+                {restart.pending ? strings.settings.restarting : strings.common.restart}
+              </Button>
+            </>
+          )}
         </SettingRow>
       </SettingsCard>
+
+      <AlertDialog open={confirmStop} onOpenChange={setConfirmStop}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{strings.settings.stopTitle}</AlertDialogTitle>
+            <AlertDialogDescription>{strings.settings.stopConfirm}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{strings.common.cancel}</AlertDialogCancel>
+            <AlertDialogAction variant="danger" onClick={stopProxy}>
+              {strings.common.stop}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={confirmHost} onOpenChange={setConfirmHost}>
         <AlertDialogContent>

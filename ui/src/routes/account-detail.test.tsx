@@ -44,6 +44,7 @@ vi.mock("@/lib/queries", () => {
     useServerStatus: () => ({ data: { running: true, host: "127.0.0.1", port: 5678, baseUrl: "" } }),
     useRpm: () => ({ data: { global: 0, byCredential: {}, byApiKey: {} } }),
     useAppInfo: () => ({ data: { version: "0.1.0" } }),
+    useApiKeys: () => ({ data: [] }),
     useAccountBalance: () => ({
       data: { id: 1, currentUsage: 10, usageLimit: 100, remaining: 90, usagePercentage: 10 },
       isLoading: false,

@@ -108,6 +108,24 @@ pub fn open_file(
         .map_err(IpcError::internal)
 }
 
+/// 「关于」里可以打开的外部链接；只认固定的几个地址，前端不能传任意 URL。
+fn link_url(kind: &str) -> Option<&'static str> {
+    match kind {
+        "project" => Some("https://github.com/kiroproxy/kiroproxy"),
+        "kiro2cc" => Some("https://github.com/TsinHzl/kiro2cc-proxy"),
+        "kiro_rs" => Some("https://github.com/hank9999/kiro.rs"),
+        _ => None,
+    }
+}
+
+#[tauri::command]
+pub fn open_link(app: tauri::AppHandle, kind: String) -> Result<(), IpcError> {
+    let url = link_url(&kind).ok_or_else(|| IpcError::new("invalid_request", "未知链接"))?;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(IpcError::internal)
+}
+
 #[tauri::command]
 pub async fn clear_logs(state: tauri::State<'_, AppState>) -> Result<(), IpcError> {
     let core = state.core()?;
@@ -123,4 +141,21 @@ pub async fn clear_logs(state: tauri::State<'_, AppState>) -> Result<(), IpcErro
 pub fn quit_app(app: tauri::AppHandle) {
     // 退出清理（停止服务、落盘）统一在 RunEvent::Exit 中执行
     app.exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::link_url;
+
+    #[test]
+    fn link_url_only_opens_known_pages() {
+        assert_eq!(
+            link_url("project"),
+            Some("https://github.com/kiroproxy/kiroproxy")
+        );
+        assert!(link_url("kiro2cc").is_some());
+        assert!(link_url("kiro_rs").is_some());
+        assert_eq!(link_url("https://example.com"), None);
+        assert_eq!(link_url(""), None);
+    }
 }

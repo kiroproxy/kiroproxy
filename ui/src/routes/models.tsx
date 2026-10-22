@@ -1,16 +1,20 @@
 import { useMemo, useState } from "react"
-import { BoxesIcon, SearchIcon } from "lucide-react"
+import { BoxesIcon, CopyIcon, SearchIcon } from "lucide-react"
+import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { LoadError } from "@/components/shell/LoadError"
 import { usePageHeader } from "@/components/shell/page-header"
 import { accountName } from "@/lib/account-status"
 import { fmtNumber } from "@/lib/format"
+import { errorMessage } from "@/lib/ipc"
 import { useAccountModels, useAccounts, useModels } from "@/lib/queries"
 import { strings } from "@/lib/strings"
 import type { ModelView } from "@/lib/types"
@@ -44,6 +48,16 @@ function isRecent(releasedAt?: string | null): boolean {
   return Number.isFinite(released) && Date.now() - released < NEW_MODEL_DAYS * 86_400_000
 }
 
+/** 配置客户端时最常用的操作就是抄模型 ID，直接给一个复制按钮。 */
+async function copyModelId(id: string) {
+  try {
+    await navigator.clipboard.writeText(id)
+    toast.success(strings.models.idCopied(id))
+  } catch (error) {
+    toast.error(errorMessage(error))
+  }
+}
+
 function ModelTable({ models }: { models: ModelView[] }) {
   const headClass = "text-[12px] text-muted-foreground"
   return (
@@ -51,7 +65,7 @@ function ModelTable({ models }: { models: ModelView[] }) {
       <Table className="table-fixed">
         <colgroup>
           <col />
-          <col className="w-[32%]" />
+          <col className="w-[34%]" />
           <col className="w-[110px]" />
           <col className="w-[96px]" />
           <col className="w-[120px]" />
@@ -74,7 +88,20 @@ function ModelTable({ models }: { models: ModelView[] }) {
                   {isRecent(model.releasedAt) ? <Badge variant="success">{strings.models.newBadge}</Badge> : null}
                 </span>
               </TableCell>
-              <TableCell className="truncate font-mono text-[11.5px] text-muted-foreground">{model.id}</TableCell>
+              <TableCell>
+                <span className="flex min-w-0 items-center gap-1">
+                  <code className="min-w-0 truncate font-mono text-[11.5px] text-muted-foreground">{model.id}</code>
+                  <Button
+                    variant="icon"
+                    size="icon"
+                    className="size-7 shrink-0"
+                    aria-label={strings.models.copyId(model.id)}
+                    onClick={() => void copyModelId(model.id)}
+                  >
+                    <CopyIcon />
+                  </Button>
+                </span>
+              </TableCell>
               <TableCell className="num text-right text-muted-foreground">
                 {model.maxTokens > 0 ? fmtNumber(model.maxTokens) : "—"}
               </TableCell>
@@ -157,47 +184,59 @@ export function ModelsPage() {
 
   return (
     <section aria-label={strings.models.title} className="flex flex-col gap-3">
-      <div className="relative w-fit">
-        <SearchIcon
-          className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-faint"
-          aria-hidden="true"
-        />
-        <Input
-          value={search}
-          placeholder={strings.models.searchPlaceholder}
-          aria-label={strings.models.searchPlaceholder}
-          className="w-[260px] rounded-full pl-8"
-          onChange={(event) => setSearch(event.target.value)}
-        />
-      </div>
+      {/* 账号探测原来排在很长的模型列表后面，不好找；改成并列的页签 */}
+      <Tabs defaultValue="upstream" className="gap-3">
+        <TabsList>
+          <TabsTrigger value="upstream">{strings.models.upstreamTab}</TabsTrigger>
+          <TabsTrigger value="probe">{strings.models.accountProbe}</TabsTrigger>
+        </TabsList>
 
-      {models.isError ? <LoadError error={models.error} onRetry={() => void models.refetch()} /> : null}
-      {models.isLoading ? <Skeleton className="h-48 w-full rounded-[16px]" /> : null}
+        <TabsContent value="upstream" className="flex flex-col gap-3">
+          <div className="relative w-fit">
+            <SearchIcon
+              className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-faint"
+              aria-hidden="true"
+            />
+            <Input
+              value={search}
+              placeholder={strings.models.searchPlaceholder}
+              aria-label={strings.models.searchPlaceholder}
+              className="w-[260px] rounded-full pl-8"
+              onChange={(event) => setSearch(event.target.value)}
+            />
+          </div>
 
-      {groups.map(([key, list]) => (
-        <Card key={key} className="gap-3">
-          <CardHeader className="grid-cols-[1fr_auto] items-center pb-0">
-            <CardTitle>{familyLabel(key)}</CardTitle>
-            <span className="num text-[11.5px] text-muted-foreground">{list.length}</span>
-          </CardHeader>
-          <CardContent>
-            <ModelTable models={list} />
-          </CardContent>
-        </Card>
-      ))}
+          {models.isError ? <LoadError error={models.error} onRetry={() => void models.refetch()} /> : null}
+          {models.isLoading ? <Skeleton className="h-48 w-full rounded-[16px]" /> : null}
 
-      {!models.isLoading && !models.isError && groups.length === 0 ? (
-        <Empty>
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <BoxesIcon />
-            </EmptyMedia>
-            <EmptyTitle>{strings.models.empty}</EmptyTitle>
-          </EmptyHeader>
-        </Empty>
-      ) : null}
+          {groups.map(([key, list]) => (
+            <Card key={key} className="gap-3">
+              <CardHeader className="grid-cols-[1fr_auto] items-center pb-0">
+                <CardTitle>{familyLabel(key)}</CardTitle>
+                <span className="num text-[11.5px] text-muted-foreground">{list.length}</span>
+              </CardHeader>
+              <CardContent>
+                <ModelTable models={list} />
+              </CardContent>
+            </Card>
+          ))}
 
-      <AccountProbe />
+          {!models.isLoading && !models.isError && groups.length === 0 ? (
+            <Empty>
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  <BoxesIcon />
+                </EmptyMedia>
+                <EmptyTitle>{strings.models.empty}</EmptyTitle>
+              </EmptyHeader>
+            </Empty>
+          ) : null}
+        </TabsContent>
+
+        <TabsContent value="probe">
+          <AccountProbe />
+        </TabsContent>
+      </Tabs>
     </section>
   )
 }

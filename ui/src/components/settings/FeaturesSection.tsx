@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input"
 import { ipc } from "@/lib/ipc"
 import { strings } from "@/lib/strings"
 import type { ApplyResult, SettingsView } from "@/lib/types"
+import { useUnsavedChanges } from "@/lib/unsaved-changes"
 import { SettingRow, SettingsCard, SwitchRow } from "./parts"
 import { isNonNegativeInteger, useApplySetting } from "./hooks"
 
@@ -12,6 +13,7 @@ export function FeaturesSection({ data }: { data: SettingsView }) {
   const [chunking, setChunking] = useState(String(data.writeChunkingMaxLines))
   const chunkingError = isNonNegativeInteger(chunking) ? null : strings.settings.invalidNumber
   const chunkingDirty = Number(chunking) !== data.writeChunkingMaxLines
+  useUnsavedChanges("settings:features", chunkingDirty)
 
   const toggle = (fn: (next: boolean) => Promise<ApplyResult>) => (next: boolean) =>
     void apply.run(() => fn(next))

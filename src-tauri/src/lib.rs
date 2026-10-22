@@ -53,6 +53,7 @@ pub fn run() {
             commands::app::restart_proxy_server,
             commands::app::open_data_dir,
             commands::app::open_file,
+            commands::app::open_link,
             commands::app::clear_logs,
             commands::app::quit_app,
             // 账号

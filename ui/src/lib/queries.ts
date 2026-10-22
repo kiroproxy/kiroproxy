@@ -14,6 +14,7 @@ import type {
   BalanceResponse,
   CreateApiKeyRequest,
   RuntimeConfigPatch,
+  ServerStatus,
   UpdateApiKeyRequest,
   UpdateCredentialRequest,
   UsageFilter,
@@ -37,6 +38,9 @@ export const queryKeys = {
   rpm: ["rpm"] as const,
   apiKeys: ["apiKeys"] as const,
   apiKeyUsage: ["apiKeyUsage"] as const,
+  /** 单个密钥的用量汇总；与 apiKeyUsage 同前缀，刷新全部用量时一起失效。 */
+  apiKeyUsageOf: (id: number) => ["apiKeyUsage", id] as const,
+  apiKeyRecords: (id: number, page: number) => ["apiKeyRecords", id, page] as const,
   usage: (filter: UsageFilter) => ["usage", filter] as const,
   usageBreakdown: (from: string, to: string) => ["usageBreakdown", from, to] as const,
   dailyUsage: ["dailyUsage"] as const,
@@ -76,6 +80,15 @@ export const useRpm = () =>
 export const useApiKeys = () => useQuery({ queryKey: queryKeys.apiKeys, queryFn: ipc.listApiKeys })
 export const useAllApiKeyUsage = () =>
   useQuery({ queryKey: queryKeys.apiKeyUsage, queryFn: ipc.getAllApiKeyUsage })
+export const useApiKeyUsage = (id: number, enabled = true) =>
+  useQuery({ queryKey: queryKeys.apiKeyUsageOf(id), queryFn: () => ipc.getApiKeyUsage(id), enabled })
+export const useApiKeyUsageRecords = (id: number, page: number, enabled = true) =>
+  useQuery({
+    queryKey: queryKeys.apiKeyRecords(id, page),
+    queryFn: () => ipc.getApiKeyUsageRecords(id, page, 50),
+    placeholderData: keepPreviousData,
+    enabled,
+  })
 export const useDailyUsage = () =>
   useQuery({ queryKey: queryKeys.dailyUsage, queryFn: ipc.getDailyUsage, refetchInterval: 30_000 })
 export const useSettings = () => useQuery({ queryKey: queryKeys.settings, queryFn: ipc.getSettings })
@@ -239,7 +252,8 @@ export function useResetApiKeyUsage() {
   const invalidate = useInvalidate()
   return useMutation({
     mutationFn: (id: number) => ipc.resetApiKeyUsage(id),
-    onSuccess: () => invalidate(queryKeys.apiKeyUsage, queryKeys.apiKeys),
+    onSuccess: (_data, id) =>
+      invalidate(queryKeys.apiKeyUsage, queryKeys.apiKeys, ["apiKeyRecords", id]),
   })
 }
 export function useVerifyAccounts() {
@@ -271,6 +285,18 @@ export function useUpdateRuntimeConfig() {
     onSuccess: (result) => qc.setQueryData(queryKeys.settings, result.settings),
   })
 }
+/** 启动 / 停止代理：成功后直接写入返回的状态，失败时重新拉取，界面不会停在旧状态。 */
+function useServerAction(run: () => Promise<ServerStatus>) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: run,
+    onSuccess: (status) => qc.setQueryData(queryKeys.server, status),
+    onError: () => void qc.invalidateQueries({ queryKey: queryKeys.server }),
+  })
+}
+export const useStartProxy = () => useServerAction(ipc.startProxyServer)
+export const useStopProxy = () => useServerAction(ipc.stopProxyServer)
+
 export function useRestartProxy() {
   const qc = useQueryClient()
   return useMutation({
