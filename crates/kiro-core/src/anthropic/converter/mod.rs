@@ -97,8 +97,8 @@ mod tools;
 mod websearch;
 
 pub use convert::convert_request;
-pub use fields::{DEFAULT_MAX_EFFORT, EffortCap, max_effort, set_max_effort};
 pub(crate) use fields::clamp_effort;
+pub use fields::{DEFAULT_MAX_EFFORT, EffortCap, max_effort, set_max_effort};
 pub(crate) use model::map_model;
 pub use result::{ConversionError, ConversionResult};
 pub use tools::{

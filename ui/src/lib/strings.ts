@@ -249,7 +249,7 @@ export const strings = {
     kiroIdeTab: "Kiro IDE",
     oauth: {
       title: "用浏览器登录 Kiro",
-      hint: "会在系统浏览器中打开 Kiro 官方登录页，和 Kiro IDE / CLI 一样在网页里选择 Google、GitHub 或账号完成登录；登录成功后自动添加账号，无需手动粘贴 refreshToken。",
+      hint: "会在系统浏览器中打开 Kiro 官方登录页，可选择 Google、GitHub、AWS Builder ID 或组织 SSO 完成登录；登录成功后自动添加账号，无需手动粘贴 refreshToken。",
       login: "打开 Kiro 登录页",
       waiting: "已打开 Kiro 登录页，请在浏览器中完成登录…",
       verifying: "授权成功，正在验证账号…",

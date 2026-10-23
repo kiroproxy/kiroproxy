@@ -224,6 +224,37 @@ impl MultiTokenManager {
         Ok(true)
     }
 
+    /// 回写额度响应中携带的账号邮箱（getUsageLimits 带 `isEmailRequired=true` 时返回）。
+    /// 仅当账号邮箱为空或与查询结果不同时更新；身份校验与订阅等级回写一致。
+    pub(crate) fn commit_account_email_if_identity_matches(
+        &self,
+        id: u64,
+        queried_credentials: &KiroCredentials,
+        email: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        let Some(email) = email.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Ok(false);
+        };
+        let mut entries = self.entries.lock();
+        let entry = entries
+            .iter_mut()
+            .find(|entry| entry.id == id)
+            .ok_or_else(|| anyhow::anyhow!("账号不存在: {}", id))?;
+
+        anyhow::ensure!(
+            Self::has_same_subscription_identity(&entry.credentials, queried_credentials),
+            "账号 #{} 在订阅查询期间身份已变更，请重试",
+            id
+        );
+
+        if entry.credentials.email.as_deref() == Some(email) {
+            return Ok(false);
+        }
+        entry.credentials.email = Some(email.to_string());
+        tracing::info!("账号 #{} 邮箱已更新: {}", id, email);
+        Ok(true)
+    }
+
     /// 确保账号进入可用池前已获取订阅等级
     async fn ensure_subscription_before_enable(&self, id: u64) -> anyhow::Result<()> {
         let needs_lookup = {
@@ -459,8 +490,25 @@ impl MultiTokenManager {
             subscription_title,
         )?;
 
-        if changed && let Err(e) = self.persist_credentials() {
-            tracing::warn!("订阅等级更新后持久化失败（不影响本次请求）: {}", e);
+        // 额度响应携带的账号邮箱（isEmailRequired=true）同样回写，供账号列表展示
+        let email_changed = self
+            .commit_account_email_if_identity_matches(
+                id,
+                &credentials,
+                usage_limits
+                    .user_info
+                    .as_ref()
+                    .and_then(|info| info.email.as_deref()),
+            )
+            .unwrap_or_else(|e| {
+                tracing::debug!("账号 #{} 邮箱回写跳过: {}", id, e);
+                false
+            });
+
+        if (changed || email_changed)
+            && let Err(e) = self.persist_credentials()
+        {
+            tracing::warn!("订阅等级/邮箱更新后持久化失败（不影响本次请求）: {}", e);
         }
 
         Ok(usage_limits)

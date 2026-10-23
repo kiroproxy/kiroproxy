@@ -20,6 +20,22 @@ pub struct UsageLimitsResponse {
     /// 使用量明细列表
     #[serde(default)]
     pub usage_breakdown_list: Vec<UsageBreakdown>,
+
+    /// 账号身份信息（请求带 `isEmailRequired=true` 时返回）
+    #[serde(default)]
+    pub user_info: Option<UserInfo>,
+}
+
+/// 账号身份信息
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInfo {
+    /// 账号邮箱（用于账号列表展示）
+    #[serde(default)]
+    pub email: Option<String>,
+    /// 身份 ID（Builder ID 为 `d-xxx.yyy` 形态）
+    #[serde(default)]
+    pub user_id: Option<String>,
 }
 
 /// 订阅信息

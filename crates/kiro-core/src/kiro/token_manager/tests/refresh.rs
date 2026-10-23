@@ -648,4 +648,27 @@ pub(crate) mod tests {
         // 非 HTTP 状态错误（网络等）不换区域；不依赖文案：含“权限不足”字样的普通错误同样不触发
         assert!(!should_try_next_region(&anyhow::anyhow!("权限不足")));
     }
+
+    #[test]
+    fn test_usage_limits_url_carries_arn_and_email_flag() {
+        use crate::kiro::token_manager::refresh::usage_limits_url;
+
+        // isEmailRequired=true 让上游返回 userInfo.email（KAM 同款参数），
+        // 丢了这个参数账号列表就显示不出邮箱
+        let with_arn = usage_limits_url(
+            "q.us-east-1.amazonaws.com",
+            Some("arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX"),
+        );
+        assert_eq!(
+            with_arn,
+            "https://q.us-east-1.amazonaws.com/getUsageLimits?origin=AI_EDITOR\
+             &resourceType=AGENTIC_REQUEST\
+             &profileArn=arn%3Aaws%3Acodewhisperer%3Aus-east-1%3A638616132270%3Aprofile%2FAAAACCCCXXXX\
+             &isEmailRequired=true"
+        );
+
+        let without_arn = usage_limits_url("codewhisperer.us-east-1.amazonaws.com", None);
+        assert!(without_arn.contains("/getUsageLimits?origin=AI_EDITOR&isEmailRequired=true"));
+        assert!(!without_arn.contains("profileArn="));
+    }
 }

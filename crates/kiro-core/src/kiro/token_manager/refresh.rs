@@ -531,24 +531,30 @@ pub(crate) async fn get_usage_limits(
         format!("q.{}.amazonaws.com", region_lower)
     };
     // 构建 URL
+    let url = usage_limits_url(&host, credentials.profile_arn.as_deref());
+
+    send_usage_limits_request(credentials, config, token, proxy, &host, &url).await
+}
+
+/// getUsageLimits 请求 URL（纯函数，便于单测）。
+///
+/// - profileArn 是可选的；
+/// - `isEmailRequired=true` 让响应携带 userInfo（账号邮箱，用于账号列表展示）。
+pub(crate) fn usage_limits_url(host: &str, profile_arn: Option<&str>) -> String {
     // resourceType=AGENTIC_REQUEST 对企业 IdC 账号（有 profileArn）有效；实测
     // BuilderId 占位 ARN + resourceType 组合同样返回 200（见函数级 doc 注释），
     // 补全后的 idc/social 账号统一走此路径
-    let mut url = if credentials.profile_arn.is_some() {
-        format!(
-            "https://{}/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST",
-            host
-        )
+    let mut url = if profile_arn.is_some() {
+        format!("https://{host}/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST")
     } else {
-        format!("https://{}/getUsageLimits?origin=AI_EDITOR", host)
+        format!("https://{host}/getUsageLimits?origin=AI_EDITOR")
     };
 
-    // profileArn 是可选的
-    if let Some(profile_arn) = &credentials.profile_arn {
+    if let Some(profile_arn) = profile_arn {
         url.push_str(&format!("&profileArn={}", urlencoding::encode(profile_arn)));
     }
-
-    send_usage_limits_request(credentials, config, token, proxy, &host, &url).await
+    url.push_str("&isEmailRequired=true");
+    url
 }
 
 /// Kiro IDE 风格的 UA 指纹（控制面请求共用，避免多处重复维护）。

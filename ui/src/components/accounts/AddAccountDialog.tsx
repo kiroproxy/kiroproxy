@@ -138,7 +138,9 @@ function BrowserLoginForm({ onDone }: { onDone: () => void }) {
         <div className="flex flex-col gap-3 rounded-[12px] border border-border bg-subtle/40 p-4">
           <div className="flex items-center gap-2 text-[12.5px] font-medium">
             <Loader2Icon className="size-4 animate-spin" aria-hidden="true" />
-            {status?.phase === "verifying" ? strings.accounts.oauth.verifying : strings.accounts.oauth.waiting}
+            {/* 后端在不同阶段会给出具体提示（如 IdC 要再走一段 AWS 授权），优先显示它 */}
+            {status?.message ??
+              (status?.phase === "verifying" ? strings.accounts.oauth.verifying : strings.accounts.oauth.waiting)}
           </div>
           {status?.verificationUrl ? (
             <p className="truncate font-mono text-[11px] text-muted-foreground" title={status.verificationUrl}>
